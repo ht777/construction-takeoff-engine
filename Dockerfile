@@ -45,22 +45,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install ODA File Converter
-# Note: This URL may change. Check https://www.opendesign.com/guestfiles/oda_file_converter
-# for the latest version
+# TASK 3 FIX: Check for local file first, then fallback to wget
+# To use local file: place .deb in resources/ folder before building
+# Download from: https://www.opendesign.com/guestfiles/oda_file_converter
 ARG ODA_VERSION=25.2.0.0
 ARG ODA_URL=https://download.opendesign.com/guestfiles/Demo/ODAFileConverter_QT6_lnxX64_8.3dll_25.2.deb
 
-RUN wget -q -O /tmp/oda_converter.deb ${ODA_URL} || \
-    echo "ODA download failed - using fallback" && \
-    # Fallback: Create a mock converter script for testing
-    mkdir -p /opt/ODAFileConverter && \
-    echo '#!/bin/bash\necho "ODA File Converter mock - DWG support requires manual installation"' > /opt/ODAFileConverter/ODAFileConverter && \
-    chmod +x /opt/ODAFileConverter/ODAFileConverter
+# Check for local ODA file first, otherwise download
+COPY resources/oda_converter.deb* /tmp/
 
-# Install ODA if download succeeded
 RUN if [ -f /tmp/oda_converter.deb ]; then \
-        dpkg -i /tmp/oda_converter.deb || apt-get install -f -y; \
-        rm /tmp/oda_converter.deb; \
+    echo "📦 Installing ODA from local file..." && \
+    dpkg -i /tmp/oda_converter.deb || apt-get install -f -y && \
+    rm /tmp/oda_converter.deb; \
+    else \
+    echo "⬇️ Downloading ODA from web..." && \
+    wget -q -O /tmp/oda_converter.deb ${ODA_URL} && \
+    dpkg -i /tmp/oda_converter.deb || apt-get install -f -y && \
+    rm /tmp/oda_converter.deb || \
+    (echo "⚠️ ODA download failed - creating mock" && \
+    mkdir -p /opt/ODAFileConverter && \
+    echo '#!/bin/bash' > /opt/ODAFileConverter/ODAFileConverter && \
+    echo 'echo "ODA mock - DWG support requires manual installation"' >> /opt/ODAFileConverter/ODAFileConverter && \
+    chmod +x /opt/ODAFileConverter/ODAFileConverter); \
     fi
 
 # Set ODA converter path
@@ -78,10 +85,10 @@ RUN pip install --upgrade pip && \
     pip install -r requirements.txt && \
     # Additional dependencies for frontend
     pip install \
-        streamlit>=1.31.0 \
-        pandas>=2.2.0 \
-        openpyxl>=3.1.0 \
-        requests>=2.31.0
+    streamlit>=1.31.0 \
+    pandas>=2.2.0 \
+    openpyxl>=3.1.0 \
+    requests>=2.31.0
 
 # =============================================================================
 # STAGE 3: Final image
@@ -129,20 +136,20 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Create startup script
 RUN echo '#!/bin/bash\n\
-# Start FastAPI backend in background\n\
-uvicorn main:app --host 0.0.0.0 --port 8000 &\n\
-BACKEND_PID=$!\n\
-\n\
-# Wait for backend to be ready\n\
-sleep 3\n\
-\n\
-# Start Streamlit frontend\n\
-streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true &\n\
-FRONTEND_PID=$!\n\
-\n\
-# Wait for both processes\n\
-wait $BACKEND_PID $FRONTEND_PID\n\
-' > /app/start.sh && chmod +x /app/start.sh
+    # Start FastAPI backend in background\n\
+    uvicorn main:app --host 0.0.0.0 --port 8000 &\n\
+    BACKEND_PID=$!\n\
+    \n\
+    # Wait for backend to be ready\n\
+    sleep 3\n\
+    \n\
+    # Start Streamlit frontend\n\
+    streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true &\n\
+    FRONTEND_PID=$!\n\
+    \n\
+    # Wait for both processes\n\
+    wait $BACKEND_PID $FRONTEND_PID\n\
+    ' > /app/start.sh && chmod +x /app/start.sh
 
 # Default command
 CMD ["/bin/bash", "/app/start.sh"]

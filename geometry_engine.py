@@ -951,6 +951,26 @@ class CadProcessor:
                     if polygon.area < GEOMETRY.MIN_ROOM_AREA_M2:
                         continue
                     
+                    # TASK 2A FIX: Skip thin rectangles (likely walls or columns)
+                    # Calculate minimum width using minimum rotated rectangle
+                    try:
+                        min_rect = polygon.minimum_rotated_rectangle
+                        if min_rect and not min_rect.is_empty:
+                            # Get width and height of the minimum bounding rectangle
+                            rect_coords = list(min_rect.exterior.coords)
+                            edge1 = ((rect_coords[0][0] - rect_coords[1][0])**2 + 
+                                     (rect_coords[0][1] - rect_coords[1][1])**2) ** 0.5
+                            edge2 = ((rect_coords[1][0] - rect_coords[2][0])**2 + 
+                                     (rect_coords[1][1] - rect_coords[2][1])**2) ** 0.5
+                            min_width = min(edge1, edge2)
+                            
+                            # If minimum width < 0.5m (50cm), it's likely a wall
+                            if min_width < 0.5:
+                                logger.debug(f"Skipping thin polygon (width={min_width*100:.1f}cm) - likely wall")
+                                continue
+                    except Exception:
+                        pass  # If calculation fails, proceed with the polygon
+                    
                     # Find room name via point-in-polygon
                     room_name = "Bilinmeyen Oda"
                     for text, text_pos in texts:
@@ -1111,6 +1131,39 @@ class QuantityCalculator:
                 "unit": "m²",
                 "description": f"Ek Malzeme - {room.name}"
             })
+        
+        # TASK 2B FIX: Add skirting boards (süpürgelik) if floor material exists
+        if materials.floor_pose:
+            # Skirting quantity = perimeter minus openings (wall_length_m)
+            quantities.append({
+                "pose_code": "25.116.1100",  # Süpürgelik standard pose
+                "category": "additional",
+                "quantity": round(room.wall_length_m, 4),
+                "unit": "mt",
+                "description": f"Süpürgelik - {room.name}"
+            })
+        
+        # TASK 2B FIX: Add door and window items from openings
+        for opening in room.openings:
+            if opening.opening_type == "door":
+                # Door item - count as 1 piece
+                quantities.append({
+                    "pose_code": "25.048.1003",  # Çelik Kapı (standard interior door)
+                    "category": "additional",
+                    "quantity": 1.0,
+                    "unit": "adet",
+                    "description": f"Kapı - {room.name}"
+                })
+            elif opening.opening_type == "window":
+                # Window item - area = width * floor_height (assumed window height)
+                window_area = opening.width_m * self.floor_height
+                quantities.append({
+                    "pose_code": "25.035.1002",  # PVC Pencere Doğraması
+                    "category": "additional",
+                    "quantity": round(window_area, 4),
+                    "unit": "m²",
+                    "description": f"Pencere - {room.name}"
+                })
         
         return quantities
     

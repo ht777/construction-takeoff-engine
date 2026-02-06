@@ -32,6 +32,7 @@ from fastapi import (
     FastAPI, HTTPException, UploadFile, File, 
     Form, Depends, BackgroundTasks, Query
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, validator
@@ -551,7 +552,10 @@ async def analyze_cad_file(
         # Process CAD file
         floor_height_m = floor_height_cm / 100.0
         processor = CadProcessor(drawing_unit=drawing_unit)
-        result = processor.process_file(temp_file)
+        
+        # CRITICAL: Run CPU-bound CAD processing in thread pool
+        # to prevent blocking the async event loop
+        result = await run_in_threadpool(processor.process_file, temp_file)
         
         if not result.success and not result.blocks:
             # Total failure
