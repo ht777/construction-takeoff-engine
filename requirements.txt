@@ -1,0 +1,40 @@
+# Construction Quantity Takeoff Engine
+# =====================================
+# İnşaat Metraj ve Maliyet Otomasyonu - Türkiye Pazarı
+# Version: 1.0.0 (MVP)
+
+# Core Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9  # For file uploads
+
+# Database
+sqlalchemy[asyncio]>=2.0.25
+asyncpg>=0.29.0  # Async PostgreSQL driver
+psycopg2-binary>=2.9.9  # Sync PostgreSQL driver (for seeding)
+
+# CAD Processing
+ezdxf>=1.1.0  # DXF parsing
+
+# Geometry
+shapely>=2.0.2  # Polygon operations
+numpy>=1.26.0  # Numerical operations
+
+# Machine Learning (for DBSCAN clustering)
+scikit-learn>=1.4.0
+
+# Utilities
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
+# Frontend (Streamlit)
+streamlit>=1.31.0
+pandas>=2.2.0
+openpyxl>=3.1.0  # Excel export
+requests>=2.31.0  # API calls
+
+# Development (optional)
+# pytest>=8.0.0
+# pytest-asyncio>=0.23.0
+# httpx>=0.26.0  # For testing FastAPI
