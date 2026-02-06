@@ -18,9 +18,13 @@ import streamlit as st
 import pandas as pd
 import requests
 import json
+import os
 from io import BytesIO
 from datetime import datetime
 from typing import Optional, Any
+
+# Get backend URL from environment variable (Docker) or default (local)
+DEFAULT_API_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 
 # =============================================================================
@@ -176,8 +180,8 @@ with st.sidebar:
     st.subheader("🔗 API Bağlantısı")
     api_url = st.text_input(
         "API URL",
-        value="http://localhost:8000",
-        help="FastAPI backend adresi"
+        value=DEFAULT_API_URL,
+        help="FastAPI backend adresi (Docker: http://backend:8000)"
     )
     
     st.markdown("---")

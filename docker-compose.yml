@@ -8,13 +8,11 @@
 # - Automatic database initialization
 #
 # Usage:
-#   docker-compose up -d              # Start all services
-#   docker-compose logs -f            # View logs
-#   docker-compose down               # Stop all services
-#   docker-compose down -v            # Stop and remove volumes
+#   docker compose up -d              # Start all services
+#   docker compose logs -f            # View logs
+#   docker compose down               # Stop all services
+#   docker compose down -v            # Stop and remove volumes
 # =============================================================================
-
-version: '3.9'
 
 services:
   # ===========================================================================

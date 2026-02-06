@@ -48,26 +48,46 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # TASK 3 FIX: Check for local file first, then fallback to wget
 # To use local file: place .deb in resources/ folder before building
 # Download from: https://www.opendesign.com/guestfiles/oda_file_converter
-ARG ODA_VERSION=25.2.0.0
+ARG ODA_VERSION=26.12.0.0
 ARG ODA_URL=https://download.opendesign.com/guestfiles/Demo/ODAFileConverter_QT6_lnxX64_8.3dll_25.2.deb
 
-# Check for local ODA file first, otherwise download
-COPY resources/oda_converter.deb* /tmp/
+# Install Qt6 and other ODA dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libqt6core6 \
+    libqt6gui6 \
+    libqt6widgets6 \
+    libgl1-mesa-glx \
+    libxcb-xinerama0 \
+    || echo "Qt6 packages not found, ODA may not work" \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN if [ -f /tmp/oda_converter.deb ]; then \
+# Copy local ODA file if exists
+COPY resources/ /tmp/resources/
+
+# Install ODA from local file or download
+RUN if [ -f /tmp/resources/oda_converter.deb ]; then \
     echo "📦 Installing ODA from local file..." && \
-    dpkg -i /tmp/oda_converter.deb || apt-get install -f -y && \
-    rm /tmp/oda_converter.deb; \
+    dpkg -i /tmp/resources/oda_converter.deb || apt-get install -f -y && \
+    rm -rf /tmp/resources; \
     else \
-    echo "⬇️ Downloading ODA from web..." && \
+    echo "⬇️ No local ODA file, downloading from web..." && \
     wget -q -O /tmp/oda_converter.deb ${ODA_URL} && \
     dpkg -i /tmp/oda_converter.deb || apt-get install -f -y && \
     rm /tmp/oda_converter.deb || \
-    (echo "⚠️ ODA download failed - creating mock" && \
+    echo "⚠️ ODA download failed"; \
+    fi && \
+    # Find and link ODA executable
+    ODA_BIN=$(find /usr /opt -name "ODAFileConverter" -type f 2>/dev/null | head -1) && \
+    if [ -n "$ODA_BIN" ]; then \
+    mkdir -p /opt/ODAFileConverter && \
+    ln -sf "$ODA_BIN" /opt/ODAFileConverter/ODAFileConverter && \
+    echo "✅ ODA linked from: $ODA_BIN"; \
+    else \
+    echo "⚠️ ODA executable not found - creating mock" && \
     mkdir -p /opt/ODAFileConverter && \
     echo '#!/bin/bash' > /opt/ODAFileConverter/ODAFileConverter && \
     echo 'echo "ODA mock - DWG support requires manual installation"' >> /opt/ODAFileConverter/ODAFileConverter && \
-    chmod +x /opt/ODAFileConverter/ODAFileConverter); \
+    chmod +x /opt/ODAFileConverter/ODAFileConverter; \
     fi
 
 # Set ODA converter path
