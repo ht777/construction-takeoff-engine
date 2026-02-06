@@ -908,11 +908,36 @@ class CadProcessor:
             blocks: list[DetectedBlock] = []
             
             for cluster_idx, indices in enumerate(cluster_indices):
-                # Get entities in this cluster
+                # Get polylines in this cluster
                 cluster_polylines = [
                     polylines[i] for i in indices 
                     if i < len(polylines)
                 ]
+                
+                # FIX: Get lines in this cluster and convert to polygons using polygonize
+                # Calculate line indices (offset by polyline count since centroids are combined)
+                polyline_count = len(polylines)
+                cluster_lines = [
+                    lines[i - polyline_count] for i in indices 
+                    if i >= polyline_count and (i - polyline_count) < len(lines)
+                ]
+                
+                # If we have lines but no polylines, try to polygonize the lines
+                if cluster_lines and not cluster_polylines:
+                    try:
+                        from shapely.ops import polygonize
+                        # Polygonize the lines to form closed shapes
+                        polygonized = list(polygonize(cluster_lines))
+                        
+                        for poly in polygonized:
+                            if poly.is_valid and not poly.is_empty and poly.area >= GEOMETRY.MIN_ROOM_AREA_M2:
+                                # Convert to polyline format for processing
+                                coords = list(poly.exterior.coords)[:-1]  # Remove closing point
+                                centroid = (poly.centroid.x, poly.centroid.y)
+                                cluster_polylines.append((coords, True, centroid))
+                                logger.debug(f"Polygonized {len(cluster_lines)} lines into polygon with area {poly.area:.2f}m²")
+                    except Exception as e:
+                        logger.warning(f"Failed to polygonize lines: {e}")
                 
                 # Calculate cluster bounding box
                 all_coords = []
