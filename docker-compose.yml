@@ -114,6 +114,13 @@ services:
       # Backend API URL (internal Docker network)
       BACKEND_URL: http://backend:8000
 
+      # Database (for Admin Panel direct database access)
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: construction_takeoff
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-securepassword123}
+
     ports:
       - "8501:8501"
 
