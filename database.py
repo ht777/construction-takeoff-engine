@@ -752,6 +752,113 @@ def seed_reference_data():
 
 
 # =============================================================================
+# BULK UPSERT HELPER (For Admin Excel Import)
+# =============================================================================
+
+def bulk_upsert_poses(
+    poses_data: list[dict],
+    batch_size: int = 100,
+    progress_callback: callable = None
+) -> dict:
+    """
+    Bulk upsert poses from Excel import.
+    
+    Args:
+        poses_data: List of dicts with keys: code, description, unit, category, default_unit_price
+        batch_size: Commit every N rows
+        progress_callback: Optional callback(current, total) for progress updates
+        
+    Returns:
+        dict with inserted, updated, errors counts
+    """
+    session = SyncSessionLocal()
+    
+    results = {
+        "inserted": 0,
+        "updated": 0,
+        "errors": [],
+        "total": len(poses_data)
+    }
+    
+    try:
+        for idx, pose_data in enumerate(poses_data):
+            try:
+                code = str(pose_data.get("code", "")).strip()
+                if not code:
+                    results["errors"].append(f"Row {idx+1}: Empty pose code")
+                    continue
+                
+                # Check if exists
+                existing = session.query(RefPose).filter_by(code=code).first()
+                
+                if existing:
+                    # Update existing
+                    existing.description = str(pose_data.get("description", existing.description))
+                    existing.unit = str(pose_data.get("unit", existing.unit))
+                    existing.category = str(pose_data.get("category", existing.category))
+                    
+                    # Update price if provided
+                    price = pose_data.get("default_unit_price")
+                    if price and price > 0:
+                        existing.default_unit_price = {"TRY": float(price)}
+                    
+                    results["updated"] += 1
+                else:
+                    # Insert new
+                    new_pose = RefPose(
+                        code=code,
+                        description=str(pose_data.get("description", "Tanımsız")),
+                        unit=str(pose_data.get("unit", "m²")),
+                        category=str(pose_data.get("category", "Diğer")),
+                        default_unit_price={"TRY": float(pose_data.get("default_unit_price", 0))} if pose_data.get("default_unit_price") else {},
+                        is_active=True
+                    )
+                    session.add(new_pose)
+                    results["inserted"] += 1
+                
+                # Batch commit
+                if (idx + 1) % batch_size == 0:
+                    session.commit()
+                    if progress_callback:
+                        progress_callback(idx + 1, len(poses_data))
+                        
+            except Exception as e:
+                results["errors"].append(f"Row {idx+1}: {str(e)[:50]}")
+        
+        # Final commit
+        session.commit()
+        if progress_callback:
+            progress_callback(len(poses_data), len(poses_data))
+            
+    except Exception as e:
+        session.rollback()
+        results["errors"].append(f"Database error: {str(e)}")
+    finally:
+        session.close()
+    
+    return results
+
+
+def get_all_poses_for_export() -> list[dict]:
+    """Export all poses for template/review."""
+    session = SyncSessionLocal()
+    try:
+        poses = session.query(RefPose).filter_by(is_active=True).all()
+        return [
+            {
+                "Poz No": p.code,
+                "Tanım": p.description,
+                "Birim": p.unit,
+                "Kategori": p.category,
+                "Birim Fiyat (TRY)": p.default_unit_price.get("TRY", 0) if p.default_unit_price else 0
+            }
+            for p in poses
+        ]
+    finally:
+        session.close()
+
+
+# =============================================================================
 # MAIN INITIALIZATION
 # =============================================================================
 

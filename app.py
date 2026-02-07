@@ -170,93 +170,142 @@ st.markdown("""
 # SIDEBAR CONFIGURATION
 # =============================================================================
 
+# Admin password from environment
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/building.png", width=80)
-    st.title("🏗️ Metraj Ayarları")
+    st.title("🏗️ Metraj Sistemi")
     
     st.markdown("---")
     
-    # API Configuration
-    st.subheader("🔗 API Bağlantısı")
-    api_url = st.text_input(
-        "API URL",
-        value=DEFAULT_API_URL,
-        help="FastAPI backend adresi (Docker: http://backend:8000)"
-    )
-    
-    st.markdown("---")
-    
-    # Drawing Parameters
-    st.subheader("📐 Çizim Parametreleri")
-    
-    drawing_unit = st.selectbox(
-        "Birim",
-        options=["cm", "mm", "m"],
+    # MODE SELECTION (New Feature)
+    st.subheader("🎯 Mod Seçimi")
+    app_mode = st.radio(
+        "Çalışma Modu",
+        options=["Metraj Hesaplayıcı", "Admin Paneli"],
         index=0,
-        help="CAD çiziminin birimi"
-    )
-    
-    floor_height_cm = st.number_input(
-        "Kat Yüksekliği (cm)",
-        min_value=200,
-        max_value=500,
-        value=280,
-        step=10,
-        help="Duvar alanı hesabı için kat yüksekliği"
-    )
-    
-    floor_multiplier = st.number_input(
-        "Kat Adedi / Çarpanı",
-        min_value=1,
-        max_value=50,
-        value=1,
-        step=1,
-        help="Hesaplanan miktarlar bu sayı ile çarpılır"
+        help="Admin paneli için şifre gerekir"
     )
     
     st.markdown("---")
     
-    # Project Info
-    st.subheader("📋 Proje Bilgisi")
-    project_name = st.text_input(
-        "Proje Adı",
-        value="Yeni Proje",
-        help="Excel dosyası adı için kullanılır"
-    )
+    # Show calculator options only in Calculator mode
+    if app_mode == "Metraj Hesaplayıcı":
+        # API Configuration
+        st.subheader("🔗 API Bağlantısı")
+        api_url = st.text_input(
+            "API URL",
+            value=DEFAULT_API_URL,
+            help="FastAPI backend adresi (Docker: http://backend:8000)"
+        )
+        
+        st.markdown("---")
+        
+        # Drawing Parameters
+        st.subheader("📐 Çizim Parametreleri")
+        
+        drawing_unit = st.selectbox(
+            "Birim",
+            options=["cm", "mm", "m"],
+            index=0,
+            help="CAD çiziminin birimi"
+        )
+        
+        floor_height_cm = st.number_input(
+            "Kat Yüksekliği (cm)",
+            min_value=200,
+            max_value=500,
+            value=280,
+            step=10,
+            help="Duvar alanı hesabı için kat yüksekliği"
+        )
+        
+        floor_multiplier = st.number_input(
+            "Kat Adedi / Çarpanı",
+            min_value=1,
+            max_value=50,
+            value=1,
+            step=1,
+            help="Hesaplanan miktarlar bu sayı ile çarpılır"
+        )
+        
+        st.markdown("---")
+        
+        # Project Info
+        st.subheader("📋 Proje Bilgisi")
+        project_name = st.text_input(
+            "Proje Adı",
+            value="Yeni Proje",
+            help="Excel dosyası adı için kullanılır"
+        )
+        
+        st.markdown("---")
+        
+        # Health Check
+        st.subheader("🔌 Sistem Durumu")
+        if st.button("🔄 Bağlantıyı Test Et"):
+            try:
+                response = requests.get(f"{api_url}/health", timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    st.success(f"✅ Bağlantı başarılı!")
+                    st.info(f"📦 Versiyon: {data.get('version', 'N/A')}")
+                    st.info(f"🗄️ Veritabanı: {data.get('database', 'N/A')}")
+                    st.info(f"📁 ODA: {data.get('oda_converter', 'N/A')}")
+                else:
+                    st.error(f"❌ API hatası: {response.status_code}")
+            except Exception as e:
+                st.error(f"❌ Bağlantı hatası: {str(e)[:50]}")
     
-    st.markdown("---")
-    
-    # Health Check
-    st.subheader("🔌 Sistem Durumu")
-    if st.button("🔄 Bağlantıyı Test Et"):
-        try:
-            response = requests.get(f"{api_url}/health", timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                st.success(f"✅ Bağlantı başarılı!")
-                st.info(f"📦 Versiyon: {data.get('version', 'N/A')}")
-                st.info(f"🗄️ Veritabanı: {data.get('database', 'N/A')}")
-                st.info(f"📁 ODA: {data.get('oda_converter', 'N/A')}")
+    else:
+        # ADMIN MODE - Show login
+        st.subheader("🔐 Admin Girişi")
+        admin_password_input = st.text_input(
+            "Şifre",
+            type="password",
+            help="Admin paneline erişim için şifre girin"
+        )
+        
+        if admin_password_input:
+            if admin_password_input == ADMIN_PASSWORD:
+                st.session_state["admin_authenticated"] = True
+                st.success("✅ Giriş başarılı!")
             else:
-                st.error(f"❌ API hatası: {response.status_code}")
-        except Exception as e:
-            st.error(f"❌ Bağlantı hatası: {str(e)[:50]}")
+                st.session_state["admin_authenticated"] = False
+                st.error("❌ Hatalı şifre!")
+        
+        st.markdown("---")
+        st.caption("💡 Varsayılan şifre: admin123")
+        st.caption("🔧 Değiştirmek için: ADMIN_PASSWORD env var")
+
+# Set default values for admin mode (not used but prevents NameError)
+if app_mode == "Admin Paneli":
+    api_url = DEFAULT_API_URL
+    drawing_unit = "cm"
+    floor_height_cm = 280
+    floor_multiplier = 1
+    project_name = "Admin"
 
 
 # =============================================================================
-# MAIN CONTENT
+# MAIN CONTENT - MODE BASED
 # =============================================================================
 
-st.title("🏗️ İnşaat Metraj Otomasyonu")
-st.markdown("**DWG/DXF** dosyanızı yükleyin, otomatik metraj çıktısı alın.")
+if app_mode == "Metraj Hesaplayıcı":
+    # ==========================================================================
+    # CALCULATOR MODE (Original UI)
+    # ==========================================================================
+    st.title("🏗️ İnşaat Metraj Otomasyonu")
+    st.markdown("**DWG/DXF** dosyanızı yükleyin, otomatik metraj çıktısı alın.")
 
-st.markdown("---")
+    st.markdown("---")
 
-# File Upload Section
-col1, col2 = st.columns([2, 1])
+    # File Upload Section
+    col1, col2 = st.columns([2, 1])
 
-with col1:
-    st.subheader("📂 Dosya Yükleme")
+    with col1:
+        st.subheader("📂 Dosya Yükleme")
     
     uploaded_file = st.file_uploader(
         "DWG veya DXF dosyası seçin",
@@ -597,6 +646,244 @@ if "analysis_result" in st.session_state:
             file_name=f"{proj_name}_raw.json",
             mime="application/json"
         )
+
+else:
+    # ==========================================================================
+    # ADMIN PANEL MODE
+    # ==========================================================================
+    st.title("🔧 Admin Paneli - Poz Veri Yönetimi")
+    st.markdown("Excel dosyasından toplu poz yükleyin veya mevcut pozları görüntüleyin.")
+    
+    # Check authentication
+    if not st.session_state.get("admin_authenticated", False):
+        st.warning("⚠️ Admin paneline erişmek için sol panelden şifre girin.")
+        st.info("💡 Varsayılan şifre: **admin123**")
+        st.stop()
+    
+    st.markdown("---")
+    
+    # Admin Tabs
+    admin_tab1, admin_tab2, admin_tab3 = st.tabs(["📤 Toplu Yükleme", "📋 Mevcut Pozlar", "📊 İstatistikler"])
+    
+    with admin_tab1:
+        st.subheader("📤 Excel'den Toplu Poz Yükleme")
+        
+        st.markdown("""
+        **Kullanım Adımları:**
+        1. Aşağıdan **boş şablon** indirin
+        2. Excel'i doldurun (Poz No zorunlu)
+        3. Doldurulmuş dosyayı yükleyin
+        4. **Upsert** işlemi: Varsa günceller, yoksa ekler
+        """)
+        
+        col_template, col_upload = st.columns(2)
+        
+        with col_template:
+            st.markdown("#### 📥 Şablon İndir")
+            
+            # Create template DataFrame
+            template_df = pd.DataFrame({
+                "Poz No": ["16.001/1", "ÖRNEK-001"],
+                "Tanım": ["C25 Beton Dökümü", "Örnek açıklama yazın"],
+                "Birim": ["m³", "m²"],
+                "Kategori": ["Beton", "Diğer"],
+                "Birim Fiyat (TRY)": [3500.00, 0]
+            })
+            
+            # Convert to Excel bytes
+            from io import BytesIO
+            template_buffer = BytesIO()
+            with pd.ExcelWriter(template_buffer, engine='openpyxl') as writer:
+                template_df.to_excel(writer, index=False, sheet_name='Pozlar')
+            template_buffer.seek(0)
+            
+            st.download_button(
+                label="📄 Boş Şablon İndir (.xlsx)",
+                data=template_buffer,
+                file_name="poz_sablonu.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            
+            st.caption("Şablon: Poz No, Tanım, Birim, Kategori, Birim Fiyat")
+        
+        with col_upload:
+            st.markdown("#### 📤 Dosya Yükle")
+            
+            uploaded_excel = st.file_uploader(
+                "Excel dosyası seçin (.xlsx)",
+                type=["xlsx"],
+                help="Şablona uygun formatta Excel"
+            )
+            
+            if uploaded_excel:
+                st.success(f"✅ {uploaded_excel.name} yüklendi")
+        
+        st.markdown("---")
+        
+        # Import Button
+        if uploaded_excel:
+            st.subheader("🚀 İçe Aktarım")
+            
+            # Preview data
+            try:
+                preview_df = pd.read_excel(uploaded_excel)
+                st.markdown(f"**Önizleme:** {len(preview_df)} satır bulundu")
+                st.dataframe(preview_df.head(10), use_container_width=True)
+                
+                # Column mapping
+                col_mapping = {
+                    "Poz No": "code",
+                    "Tanım": "description", 
+                    "Birim": "unit",
+                    "Kategori": "category",
+                    "Birim Fiyat (TRY)": "default_unit_price"
+                }
+                
+                if st.button("🔄 İçe Aktarmayı Başlat", type="primary", use_container_width=True):
+                    # Reset file position
+                    uploaded_excel.seek(0)
+                    import_df = pd.read_excel(uploaded_excel)
+                    
+                    # Rename columns
+                    import_df = import_df.rename(columns=col_mapping)
+                    
+                    # Convert to list of dicts
+                    poses_data = import_df.to_dict('records')
+                    
+                    # Progress bar
+                    progress_bar = st.progress(0, text="İçe aktarılıyor...")
+                    status_text = st.empty()
+                    
+                    def update_progress(current, total):
+                        progress_bar.progress(current / total, text=f"İşleniyor: {current}/{total}")
+                    
+                    # Import using database function
+                    try:
+                        from database import bulk_upsert_poses
+                        
+                        results = bulk_upsert_poses(
+                            poses_data=poses_data,
+                            batch_size=100,
+                            progress_callback=update_progress
+                        )
+                        
+                        progress_bar.progress(1.0, text="Tamamlandı!")
+                        
+                        # Show results
+                        st.success(f"""
+                        ✅ **İçe Aktarım Tamamlandı!**
+                        - 🆕 Eklenen: **{results['inserted']}** poz
+                        - 🔄 Güncellenen: **{results['updated']}** poz  
+                        - ❌ Hata: **{len(results['errors'])}** satır
+                        """)
+                        
+                        if results['errors']:
+                            with st.expander("⚠️ Hatalar", expanded=False):
+                                for err in results['errors'][:20]:
+                                    st.error(err)
+                                if len(results['errors']) > 20:
+                                    st.warning(f"... ve {len(results['errors']) - 20} hata daha")
+                                    
+                    except Exception as e:
+                        st.error(f"❌ İçe aktarım hatası: {str(e)}")
+                        
+            except Exception as e:
+                st.error(f"❌ Excel okuma hatası: {str(e)}")
+    
+    with admin_tab2:
+        st.subheader("📋 Mevcut Pozlar")
+        
+        try:
+            from database import get_all_poses_for_export
+            
+            poses = get_all_poses_for_export()
+            
+            if poses:
+                poses_df = pd.DataFrame(poses)
+                
+                # Filter
+                search_query = st.text_input("🔍 Ara (Poz No veya Tanım)", "")
+                
+                if search_query:
+                    mask = (
+                        poses_df["Poz No"].str.contains(search_query, case=False, na=False) |
+                        poses_df["Tanım"].str.contains(search_query, case=False, na=False)
+                    )
+                    filtered_df = poses_df[mask]
+                else:
+                    filtered_df = poses_df
+                
+                st.info(f"📊 Toplam: **{len(poses_df)}** poz | Gösterilen: **{len(filtered_df)}**")
+                
+                st.dataframe(
+                    filtered_df,
+                    use_container_width=True,
+                    height=500,
+                    column_config={
+                        "Birim Fiyat (TRY)": st.column_config.NumberColumn(
+                            "Birim Fiyat (TRY)",
+                            format="%.2f ₺"
+                        )
+                    }
+                )
+                
+                # Export button
+                export_buffer = BytesIO()
+                with pd.ExcelWriter(export_buffer, engine='openpyxl') as writer:
+                    poses_df.to_excel(writer, index=False, sheet_name='Tüm Pozlar')
+                export_buffer.seek(0)
+                
+                st.download_button(
+                    label="📥 Tüm Pozları İndir (.xlsx)",
+                    data=export_buffer,
+                    file_name=f"tum_pozlar_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("Henüz poz kaydı bulunamadı.")
+                
+        except Exception as e:
+            st.error(f"Veritabanı hatası: {str(e)}")
+    
+    with admin_tab3:
+        st.subheader("📊 Veritabanı İstatistikleri")
+        
+        try:
+            from database import get_all_poses_for_export
+            
+            poses = get_all_poses_for_export()
+            
+            if poses:
+                poses_df = pd.DataFrame(poses)
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Toplam Poz", len(poses_df))
+                
+                with col2:
+                    kategori_sayisi = poses_df["Kategori"].nunique()
+                    st.metric("Kategori Sayısı", kategori_sayisi)
+                
+                with col3:
+                    fiyatli = (poses_df["Birim Fiyat (TRY)"] > 0).sum()
+                    st.metric("Fiyatlı Poz", fiyatli)
+                
+                st.markdown("---")
+                
+                st.markdown("#### 📈 Kategori Dağılımı")
+                kategori_counts = poses_df["Kategori"].value_counts()
+                st.bar_chart(kategori_counts)
+                
+                st.markdown("#### 📋 Birim Dağılımı")
+                birim_counts = poses_df["Birim"].value_counts()
+                st.bar_chart(birim_counts)
+            else:
+                st.info("İstatistik için veri bulunamadı.")
+                
+        except Exception as e:
+            st.error(f"İstatistik hatası: {str(e)}")
 
 
 # =============================================================================
