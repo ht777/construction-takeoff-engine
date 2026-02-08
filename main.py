@@ -931,9 +931,10 @@ async def recalculate_bom(
         {
             "pose_code": item["pose_code"],
             "description": item["description"],
-            "category": item["category"],
+            "category": item["category"] if item["category"] != "Unknown" else "FLOOR",
             "total_quantity": round(item["total_quantity"], 4),
-            "unit": item["unit"]
+            "unit": item["unit"],
+            "recipe_breakdown": []  # Empty for recalculated results
         }
         for item in sorted(aggregated_bom.values(), key=lambda x: (x["category"], x["pose_code"]))
     ]
