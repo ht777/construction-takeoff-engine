@@ -560,6 +560,142 @@ if "analysis_result" in st.session_state:
             for w in warnings:
                 st.warning(f"**{w['type']}**: {w['message']}")
     
+    # =========================================================================
+    # v1.1: MATERIAL PREFERENCES SECTION
+    # =========================================================================
+    
+    with st.expander("🛠️ Malzeme Tercihleri (v1.1)", expanded=False):
+        st.markdown("""
+        Bu bölümde her oda için otomatik atanan malzemeleri değiştirebilirsiniz.
+        Değişiklik yaptıktan sonra **"Metrajı Güncelle"** butonuna tıklayın.
+        """)
+        
+        # Get detected rooms from blocks
+        blocks = result.get("blocks", [])
+        analysis_id = result.get("project_id", "")
+        
+        # Fetch available poses by surface type from API
+        try:
+            floor_poses_resp = requests.get(f"{api_url}/poses/by-surface/floor", timeout=10)
+            wall_poses_resp = requests.get(f"{api_url}/poses/by-surface/wall", timeout=10)
+            ceiling_poses_resp = requests.get(f"{api_url}/poses/by-surface/ceiling", timeout=10)
+            
+            floor_poses = floor_poses_resp.json().get("poses", []) if floor_poses_resp.ok else []
+            wall_poses = wall_poses_resp.json().get("poses", []) if wall_poses_resp.ok else []
+            ceiling_poses = ceiling_poses_resp.json().get("poses", []) if ceiling_poses_resp.ok else []
+        except:
+            floor_poses = []
+            wall_poses = []
+            ceiling_poses = []
+        
+        # Initialize material overrides in session state
+        if "material_overrides" not in st.session_state:
+            st.session_state["material_overrides"] = {}
+        
+        # Show room-by-room material selection
+        room_counter = 0
+        for block in blocks:
+            for floor in block.get("floors", []):
+                for room in floor.get("rooms", []):
+                    room_name = room.get("name", f"Oda {room_counter}")
+                    room_type = room.get("room_type", "unknown")
+                    room_area = room.get("area_m2", 0)
+                    room_id = f"room_{hash(room_name) % 10000}"
+                    
+                    st.markdown(f"#### {room_name} ({room_area:.1f} m²)")
+                    
+                    # Get current materials from room
+                    current_materials = room.get("materials", [])
+                    current_floor = next((m for m in current_materials if "döşeme" in m.get("category", "").lower() or "floor" in m.get("category", "").lower()), None)
+                    current_wall = next((m for m in current_materials if "duvar" in m.get("category", "").lower() or "wall" in m.get("category", "").lower()), None)
+                    current_ceiling = next((m for m in current_materials if "tavan" in m.get("category", "").lower() or "ceiling" in m.get("category", "").lower()), None)
+                    
+                    col_f, col_w, col_c = st.columns(3)
+                    
+                    # Floor material selector
+                    with col_f:
+                        floor_options = ["Otomatik"] + [p["display"] for p in floor_poses]
+                        floor_default = current_floor.get("pose_code", "Otomatik") if current_floor else "Otomatik"
+                        selected_floor = st.selectbox(
+                            "🪵 Döşeme",
+                            options=floor_options,
+                            key=f"floor_{room_id}",
+                            help="Döşeme malzemesi seçin"
+                        )
+                        if selected_floor != "Otomatik":
+                            st.session_state["material_overrides"][f"{room_id}_floor"] = selected_floor.split(" - ")[0]
+                    
+                    # Wall material selector
+                    with col_w:
+                        wall_options = ["Otomatik"] + [p["display"] for p in wall_poses]
+                        wall_default = current_wall.get("pose_code", "Otomatik") if current_wall else "Otomatik"
+                        selected_wall = st.selectbox(
+                            "🧱 Duvar",
+                            options=wall_options,
+                            key=f"wall_{room_id}",
+                            help="Duvar malzemesi seçin"
+                        )
+                        if selected_wall != "Otomatik":
+                            st.session_state["material_overrides"][f"{room_id}_wall"] = selected_wall.split(" - ")[0]
+                    
+                    # Ceiling material selector
+                    with col_c:
+                        ceiling_options = ["Otomatik"] + [p["display"] for p in ceiling_poses]
+                        ceiling_default = current_ceiling.get("pose_code", "Otomatik") if current_ceiling else "Otomatik"
+                        selected_ceiling = st.selectbox(
+                            "🔲 Tavan",
+                            options=ceiling_options,
+                            key=f"ceiling_{room_id}",
+                            help="Tavan malzemesi seçin"
+                        )
+                        if selected_ceiling != "Otomatik":
+                            st.session_state["material_overrides"][f"{room_id}_ceiling"] = selected_ceiling.split(" - ")[0]
+                    
+                    st.markdown("---")
+                    room_counter += 1
+        
+        # Recalculate button
+        if st.button("🔄 Metrajı Güncelle", type="primary", use_container_width=True):
+            overrides = st.session_state.get("material_overrides", {})
+            
+            if not overrides:
+                st.info("Değişiklik yapılmadı. Varsayılan malzemeler kullanılıyor.")
+            else:
+                # Build override list for API
+                override_list = []
+                for key, pose_code in overrides.items():
+                    parts = key.rsplit("_", 1)
+                    if len(parts) == 2:
+                        room_id, surface_type = parts
+                        override_list.append({
+                            "room_id": room_id,
+                            "surface_type": surface_type,
+                            "new_pose_code": pose_code
+                        })
+                
+                try:
+                    recalc_response = requests.post(
+                        f"{api_url}/recalculate",
+                        json={
+                            "analysis_id": analysis_id,
+                            "overrides": override_list,
+                            "floor_height_cm": int(summary.get("floor_height_m", 2.8) * 100)
+                        },
+                        timeout=60
+                    )
+                    
+                    if recalc_response.ok:
+                        recalc_result = recalc_response.json()
+                        # Update BOM in session state
+                        result["bom_summary"] = recalc_result.get("bom_summary", [])
+                        st.session_state["analysis_result"] = result
+                        st.success(f"✅ Metraj güncellendi! {recalc_result.get('overrides_applied', 0)} değişiklik uygulandı.")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Güncelleme hatası: {recalc_response.text[:200]}")
+                except Exception as e:
+                    st.error(f"❌ Bağlantı hatası: {str(e)}")
+    
     # Tabs for different views
     tab1, tab2, tab3 = st.tabs(["📋 Metraj (BOM)", "🏠 Oda Detayları", "📁 Ham JSON"])
     

@@ -876,6 +876,152 @@ def get_all_poses_for_export() -> list[dict]:
 
 
 # =============================================================================
+# POSE RETRIEVAL HELPERS (v1.1 Material Selection)
+# =============================================================================
+
+def get_poses_by_category(category: str) -> list[dict]:
+    """
+    Get all active poses filtered by category.
+    
+    Args:
+        category: Category name (e.g., 'Beton', 'Seramik', 'Boya')
+        
+    Returns:
+        List of pose dicts with code, description, unit, price
+    """
+    session = SyncSessionLocal()
+    try:
+        poses = session.query(RefPose).filter(
+            RefPose.is_active == True,
+            RefPose.category.ilike(f"%{category}%")
+        ).order_by(RefPose.code).all()
+        
+        return [
+            {
+                "code": p.code,
+                "description": p.description,
+                "unit": p.unit,
+                "category": p.category,
+                "price_try": p.default_unit_price.get("TRY", 0) if p.default_unit_price else 0,
+                "display": f"{p.code} - {p.description}"
+            }
+            for p in poses
+        ]
+    finally:
+        session.close()
+
+
+def get_all_pose_categories() -> list[str]:
+    """Get distinct pose categories for dropdown population."""
+    session = SyncSessionLocal()
+    try:
+        categories = session.query(RefPose.category).filter(
+            RefPose.is_active == True
+        ).distinct().order_by(RefPose.category).all()
+        
+        return [c[0] for c in categories if c[0]]
+    finally:
+        session.close()
+
+
+def get_poses_for_surface_type(surface_type: str) -> list[dict]:
+    """
+    Get poses suitable for a surface type (floor/wall/ceiling).
+    
+    Uses keyword matching to find relevant materials:
+    - floor: seramik, parke, laminat, granit, mermer, döşeme, yer
+    - wall: boya, sıva, kaplama, fayans, duvar
+    - ceiling: boya, asma tavan, tavan
+    
+    Args:
+        surface_type: 'floor', 'wall', or 'ceiling'
+        
+    Returns:
+        List of pose dicts suitable for that surface type
+    """
+    session = SyncSessionLocal()
+    
+    # Surface type to keyword mapping
+    SURFACE_KEYWORDS = {
+        "floor": ["seramik", "parke", "laminat", "granit", "mermer", "döşeme", "yer", "karo", "halı"],
+        "wall": ["boya", "sıva", "kaplama", "fayans", "duvar", "saten", "plastik", "seramik"],
+        "ceiling": ["boya", "asma", "tavan", "plastik", "saten", "alçı"]
+    }
+    
+    keywords = SURFACE_KEYWORDS.get(surface_type.lower(), [])
+    
+    try:
+        from sqlalchemy import or_
+        
+        # Build OR conditions for keyword matching
+        conditions = []
+        for kw in keywords:
+            conditions.append(RefPose.description.ilike(f"%{kw}%"))
+            conditions.append(RefPose.category.ilike(f"%{kw}%"))
+        
+        if not conditions:
+            return []
+        
+        poses = session.query(RefPose).filter(
+            RefPose.is_active == True,
+            or_(*conditions)
+        ).order_by(RefPose.code).all()
+        
+        return [
+            {
+                "code": p.code,
+                "description": p.description,
+                "unit": p.unit,
+                "category": p.category,
+                "price_try": p.default_unit_price.get("TRY", 0) if p.default_unit_price else 0,
+                "display": f"{p.code} - {p.description}"
+            }
+            for p in poses
+        ]
+    finally:
+        session.close()
+
+
+def get_pose_by_code(code: str) -> dict | None:
+    """Get a single pose by its code."""
+    session = SyncSessionLocal()
+    try:
+        pose = session.query(RefPose).filter_by(code=code, is_active=True).first()
+        if pose:
+            return {
+                "code": pose.code,
+                "description": pose.description,
+                "unit": pose.unit,
+                "category": pose.category,
+                "price_try": pose.default_unit_price.get("TRY", 0) if pose.default_unit_price else 0,
+                "display": f"{pose.code} - {pose.description}"
+            }
+        return None
+    finally:
+        session.close()
+
+
+def get_all_poses_simple() -> list[dict]:
+    """Get all active poses in simple format for UI dropdowns."""
+    session = SyncSessionLocal()
+    try:
+        poses = session.query(RefPose).filter_by(is_active=True).order_by(RefPose.code).all()
+        return [
+            {
+                "code": p.code,
+                "description": p.description,
+                "unit": p.unit,
+                "category": p.category,
+                "price_try": p.default_unit_price.get("TRY", 0) if p.default_unit_price else 0,
+                "display": f"{p.code} - {p.description}"
+            }
+            for p in poses
+        ]
+    finally:
+        session.close()
+
+
+# =============================================================================
 # MAIN INITIALIZATION
 # =============================================================================
 

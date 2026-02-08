@@ -7,6 +7,7 @@ Production-ready API with:
 - Complete BOM calculation
 - Excel-ready JSON output
 - Health check and admin endpoints
+- v1.1: Interactive Material Selection
 
 2026 Architecture Notes:
 - Async-first design for high concurrency
@@ -15,7 +16,7 @@ Production-ready API with:
 - CORS enabled for frontend integration
 
 Author: AI Solutions Architect
-Version: 1.0.0 (MVP)
+Version: 1.1.0 (Material Selection)
 """
 
 import uuid
@@ -27,6 +28,7 @@ from typing import Optional, Any
 from decimal import Decimal
 import tempfile
 import shutil
+import time
 
 from fastapi import (
     FastAPI, HTTPException, UploadFile, File, 
@@ -42,7 +44,10 @@ from sqlalchemy import text
 from config import API, LOGGING_CONFIG, GEOMETRY, RoomType, ROOM_MATERIALS
 from database import (
     get_db, init_database, RecipeEngine,
-    Project, Quantity, RefPose
+    Project, Quantity, RefPose,
+    # v1.1: Material Selection helpers
+    get_poses_by_category, get_all_pose_categories,
+    get_poses_for_surface_type, get_pose_by_code, get_all_poses_simple
 )
 from geometry_engine import (
     CadProcessor, QuantityCalculator, ProcessingResult,
@@ -193,6 +198,87 @@ class PoseResponse(BaseModel):
     category: str
     unit: str
     default_unit_price: dict
+
+
+# =============================================================================
+# v1.1 MODELS: Material Selection
+# =============================================================================
+
+class AssignedMaterial(BaseModel):
+    """Material assigned to a surface type."""
+    pose_code: str
+    pose_name: str
+    surface_type: str  # floor, wall, ceiling
+
+
+class DetectedRoomInfo(BaseModel):
+    """Detected room info for material override UI."""
+    room_id: str
+    room_name: str
+    room_type: str
+    area_m2: float
+    perimeter_m: float
+    assigned_materials: dict[str, AssignedMaterial]  # surface_type -> material
+
+
+class MaterialOverride(BaseModel):
+    """Single material override for a room."""
+    room_id: str
+    surface_type: str  # floor, wall, ceiling
+    new_pose_code: str
+
+
+class RecalculateRequest(BaseModel):
+    """Request to recalculate BOM with material overrides."""
+    analysis_id: str
+    overrides: list[MaterialOverride]
+    floor_height_cm: int = 280
+
+
+class PoseListResponse(BaseModel):
+    """List of poses for dropdown population."""
+    poses: list[dict]
+    total: int
+
+
+class ExtendedAnalysisResponse(BaseModel):
+    """Extended analysis response with detected rooms for v1.1."""
+    project_id: str
+    project_name: str
+    calculated_at: str
+    file_hash: Optional[str]
+    
+    summary: dict = Field(default_factory=dict)
+    blocks: list[BlockResponse]
+    bom_summary: list[BOMSummaryItem]
+    
+    # v1.1: Detected rooms for material override
+    detected_rooms: list[DetectedRoomInfo] = []
+    analysis_id: str  # For recalculation cache lookup
+    
+    warnings: list[WarningResponse]
+    stats: dict
+
+
+# =============================================================================
+# v1.1: ANALYSIS CACHE (In-Memory)
+# =============================================================================
+
+# Cache structure: {analysis_id: {"result": ProcessingResult, "created_at": timestamp, "params": {...}}}
+# TTL: 1 hour
+ANALYSIS_CACHE: dict[str, dict] = {}
+CACHE_TTL_SECONDS = 3600  # 1 hour
+
+
+def cleanup_expired_cache():
+    """Remove expired cache entries."""
+    current_time = time.time()
+    expired_keys = [
+        key for key, value in ANALYSIS_CACHE.items()
+        if current_time - value.get("created_at", 0) > CACHE_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        del ANALYSIS_CACHE[key]
 
 
 # =============================================================================
@@ -578,6 +664,22 @@ async def analyze_cad_file(
             db=db
         )
         
+        # v1.1: Cache result for recalculation
+        analysis_id = response.project_id
+        ANALYSIS_CACHE[analysis_id] = {
+            "result": result,
+            "created_at": time.time(),
+            "params": {
+                "drawing_unit": drawing_unit,
+                "floor_height_m": floor_height_m,
+                "project_name": project_name
+            }
+        }
+        logger.info(f"Cached analysis {analysis_id} for recalculation")
+        
+        # Cleanup expired cache entries
+        cleanup_expired_cache()
+        
         return response
         
     except HTTPException:
@@ -690,6 +792,164 @@ async def list_room_types():
     
     return room_types
 
+
+# =============================================================================
+# v1.1: MATERIAL SELECTION ENDPOINTS
+# =============================================================================
+
+@app.get("/poses/categories", response_model=list[str])
+async def get_pose_categories():
+    """
+    Get all available pose categories for filtering.
+    
+    Returns a list of distinct categories from the RefPose table.
+    """
+    try:
+        categories = get_all_pose_categories()
+        return categories
+    except Exception as e:
+        logger.error(f"Error fetching categories: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/poses/by-surface/{surface_type}", response_model=PoseListResponse)
+async def get_poses_by_surface(surface_type: str):
+    """
+    Get poses suitable for a surface type.
+    
+    Args:
+        surface_type: 'floor', 'wall', or 'ceiling'
+    
+    Returns:
+        List of poses with their details
+    """
+    valid_types = ["floor", "wall", "ceiling"]
+    if surface_type.lower() not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid surface type: {surface_type}. Must be one of: {valid_types}"
+        )
+    
+    try:
+        poses = get_poses_for_surface_type(surface_type)
+        return PoseListResponse(poses=poses, total=len(poses))
+    except Exception as e:
+        logger.error(f"Error fetching poses for surface {surface_type}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/poses/all", response_model=PoseListResponse)
+async def get_all_poses_endpoint():
+    """
+    Get all active poses for dropdown population.
+    
+    Returns all poses in simple format for UI dropdowns.
+    """
+    try:
+        poses = get_all_poses_simple()
+        return PoseListResponse(poses=poses, total=len(poses))
+    except Exception as e:
+        logger.error(f"Error fetching all poses: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/recalculate")
+async def recalculate_bom(
+    request: RecalculateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Recalculate BOM with material overrides.
+    
+    This endpoint:
+    1. Retrieves cached analysis result
+    2. Applies material overrides
+    3. Recalculates quantities with new materials
+    4. Returns updated BOM
+    
+    **Note:** Analysis must have been performed recently (cache TTL: 1 hour)
+    """
+    # Cleanup expired cache entries
+    cleanup_expired_cache()
+    
+    # Find cached analysis
+    cache_entry = ANALYSIS_CACHE.get(request.analysis_id)
+    if not cache_entry:
+        raise HTTPException(
+            status_code=404,
+            detail="Analysis not found or expired. Please re-analyze the file."
+        )
+    
+    cached_result: ProcessingResult = cache_entry["result"]
+    cached_params = cache_entry["params"]
+    
+    floor_height_m = request.floor_height_cm / 100.0
+    calculator = QuantityCalculator(floor_height_m=floor_height_m)
+    
+    # Build override map: room_id + surface_type -> pose_code
+    override_map = {
+        f"{o.room_id}_{o.surface_type}": o.new_pose_code
+        for o in request.overrides
+    }
+    
+    # Recalculate with overrides
+    aggregated_bom: dict[str, dict] = {}
+    
+    for block in cached_result.blocks:
+        for room in block.rooms:
+            room_id = f"room_{hash(room.name) % 10000}"
+            
+            # Get base quantities
+            room_quantities = calculator.calculate_room_quantities(room)
+            
+            for qty in room_quantities:
+                original_pose = qty["pose_code"]
+                surface_type = qty.get("surface_type", "unknown")
+                
+                # Check if override exists for this room + surface
+                override_key = f"{room_id}_{surface_type}"
+                pose_code = override_map.get(override_key, original_pose)
+                
+                # Fetch pose details
+                pose_info = get_pose_by_code(pose_code)
+                if not pose_info:
+                    pose_info = {"code": pose_code, "description": pose_code, "unit": qty["unit"], "category": "Unknown"}
+                
+                # Aggregate
+                if pose_code not in aggregated_bom:
+                    aggregated_bom[pose_code] = {
+                        "pose_code": pose_code,
+                        "description": pose_info["description"],
+                        "category": pose_info.get("category", "Unknown"),
+                        "unit": qty["unit"],
+                        "total_quantity": 0
+                    }
+                aggregated_bom[pose_code]["total_quantity"] += qty["quantity"]
+    
+    # Build response
+    bom_list = [
+        {
+            "pose_code": item["pose_code"],
+            "description": item["description"],
+            "category": item["category"],
+            "total_quantity": round(item["total_quantity"], 4),
+            "unit": item["unit"]
+        }
+        for item in sorted(aggregated_bom.values(), key=lambda x: (x["category"], x["pose_code"]))
+    ]
+    
+    return {
+        "status": "success",
+        "analysis_id": request.analysis_id,
+        "overrides_applied": len(request.overrides),
+        "bom_summary": bom_list,
+        "recalculated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+# =============================================================================
+# ADMIN ENDPOINTS
+# =============================================================================
 
 @app.post("/init-db")
 async def initialize_database():
