@@ -19,6 +19,7 @@ import pandas as pd
 import requests
 import json
 import os
+import base64
 from io import BytesIO
 from datetime import datetime
 from typing import Optional, Any
@@ -552,6 +553,26 @@ if "analysis_result" in st.session_state:
             """, unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
+    
+    # v1.1: Floor Plan Visualization
+    floor_plan_b64 = result.get("floor_plan_image")
+    if floor_plan_b64:
+        with st.expander("🗺️ Kat Planı Görselleştirmesi", expanded=True):
+            try:
+                # Decode base64 to bytes
+                image_bytes = base64.b64decode(floor_plan_b64)
+                st.image(
+                    image_bytes,
+                    caption="Tespit Edilen Odalar ve Alanlar",
+                    use_container_width=True
+                )
+                st.markdown("""
+                <div style="text-align: center; color: #888; font-size: 0.9em;">
+                    💡 Renk kodları: Mavi=Salon, Yeşil=Yatak Odası, Turuncu=Mutfak, Mavi-Yeşil=Islak Hacim
+                </div>
+                """, unsafe_allow_html=True)
+            except Exception as e:
+                st.warning(f"Görsel yüklenemedi: {e}")
     
     # Warnings
     warnings = result.get("warnings", [])

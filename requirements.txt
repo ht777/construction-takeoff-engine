@@ -34,6 +34,9 @@ pandas>=2.2.0
 openpyxl>=3.1.0  # Excel export
 requests>=2.31.0  # API calls
 
+# Visualization (v1.1)
+matplotlib>=3.8.0  # Floor plan visualization
+
 # Development (optional)
 # pytest>=8.0.0
 # pytest-asyncio>=0.23.0

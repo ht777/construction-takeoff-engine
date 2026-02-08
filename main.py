@@ -53,6 +53,7 @@ from geometry_engine import (
     CadProcessor, QuantityCalculator, ProcessingResult,
     DetectedBlock, DetectedRoom, ProcessingWarning
 )
+from visualization import generate_floor_plan_image
 
 
 # =============================================================================
@@ -178,6 +179,9 @@ class AnalysisResponse(BaseModel):
     summary: dict = Field(default_factory=dict)
     blocks: list[BlockResponse]
     bom_summary: list[BOMSummaryItem]
+    
+    # v1.1: Floor plan visualization
+    floor_plan_image: Optional[str] = None  # Base64 encoded PNG
     
     warnings: list[WarningResponse]
     stats: dict
@@ -537,6 +541,18 @@ async def build_analysis_response(
     # Sort BOM by category then pose code
     bom_summary.sort(key=lambda x: (x.category, x.pose_code))
     
+    # v1.1: Generate floor plan visualization
+    floor_plan_b64 = None
+    try:
+        floor_plan_b64 = await run_in_threadpool(
+            generate_floor_plan_image,
+            result.blocks,
+            project_name
+        )
+        logger.info(f"Generated floor plan image for {project_name}")
+    except Exception as e:
+        logger.warning(f"Failed to generate floor plan image: {e}")
+    
     return AnalysisResponse(
         project_id=project_id,
         project_name=project_name,
@@ -550,6 +566,7 @@ async def build_analysis_response(
         },
         blocks=blocks_response,
         bom_summary=bom_summary,
+        floor_plan_image=floor_plan_b64,
         warnings=warnings,
         stats=result.stats
     )
