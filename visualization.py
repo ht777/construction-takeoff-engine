@@ -125,7 +125,7 @@ def generate_floor_plan_image(
                     all_coords.extend(coords)
                     
                     # Create patch
-                    room_color = ROOM_COLORS.get(room.room_type, ROOM_COLORS[RoomType.UNKNOWN])
+                    room_color = ROOM_COLORS.get(room.room_type, ROOM_COLORS[RoomType.TYPE_UNKNOWN])
                     patch = MplPolygon(
                         coords,
                         closed=True,
@@ -191,7 +191,7 @@ def generate_floor_plan_image(
     if show_legend and room_types_used:
         legend_patches = []
         for room_type in sorted(room_types_used, key=lambda x: x.value):
-            color = ROOM_COLORS.get(room_type, ROOM_COLORS[RoomType.UNKNOWN])
+            color = ROOM_COLORS.get(room_type, ROOM_COLORS[RoomType.TYPE_UNKNOWN])
             name = ROOM_TYPE_NAMES.get(room_type, str(room_type.value))
             patch = mpatches.Patch(color=color, label=name, alpha=0.7)
             legend_patches.append(patch)
@@ -317,7 +317,7 @@ def _add_north_arrow(ax, x_pos: float, y_pos: float, text_color: str):
 
 def get_room_color(room_type: RoomType) -> str:
     """Get the display color for a room type."""
-    return ROOM_COLORS.get(room_type, ROOM_COLORS[RoomType.UNKNOWN])
+    return ROOM_COLORS.get(room_type, ROOM_COLORS[RoomType.TYPE_UNKNOWN])
 
 
 def get_room_type_name(room_type: RoomType) -> str:
