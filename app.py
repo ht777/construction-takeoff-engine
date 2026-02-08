@@ -731,13 +731,27 @@ else:
                 st.markdown(f"**Önizleme:** {len(preview_df)} satır bulundu")
                 st.dataframe(preview_df.head(10), use_container_width=True)
                 
-                # Column mapping
+                # DEBUG: Show column info
+                with st.expander("🔍 Debug: Sütun Bilgileri", expanded=False):
+                    st.write("**Excel Sütunları:**", list(preview_df.columns))
+                    if len(preview_df) > 0:
+                        st.write("**İlk satır değerleri:**")
+                        for col in preview_df.columns:
+                            val = preview_df.iloc[0][col]
+                            st.write(f"  - `{col}`: `{val}` (type: {type(val).__name__})")
+                
+                # Column mapping (handle both "Birim Fiyat" and "BirimFiyat" variants)
                 col_mapping = {
                     "Poz No": "code",
                     "Tanım": "description", 
                     "Birim": "unit",
                     "Kategori": "category",
-                    "Birim Fiyat (TRY)": "default_unit_price"
+                    "Birim Fiyat (TRY)": "default_unit_price",
+                    "BirimFiyat (TRY)": "default_unit_price",  # Alternative without space
+                    "Birim Fiyat": "default_unit_price",       # Without currency
+                    "BirimFiyat": "default_unit_price",        # Without space and currency
+                    "Fiyat": "default_unit_price",             # Short form
+                    "Fiyat (TRY)": "default_unit_price",       # Short with currency
                 }
                 
                 if st.button("🔄 İçe Aktarmayı Başlat", type="primary", use_container_width=True):
@@ -747,6 +761,13 @@ else:
                     
                     # Rename columns
                     import_df = import_df.rename(columns=col_mapping)
+                    
+                    # DEBUG: Show mapped data
+                    st.info(f"🔍 Mapped columns: {list(import_df.columns)}")
+                    if len(import_df) > 0:
+                        first_row = import_df.iloc[0].to_dict()
+                        price_val = first_row.get('default_unit_price', 'NOT FOUND')
+                        st.info(f"🔍 First row price: {price_val} (type: {type(price_val).__name__})")
                     
                     # Convert to list of dicts
                     poses_data = import_df.to_dict('records')
