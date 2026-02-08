@@ -576,9 +576,9 @@ if "analysis_result" in st.session_state:
         
         # Fetch available poses by surface type from API
         try:
-            floor_poses_resp = requests.get(f"{api_url}/poses/by-surface/floor", timeout=10)
-            wall_poses_resp = requests.get(f"{api_url}/poses/by-surface/wall", timeout=10)
-            ceiling_poses_resp = requests.get(f"{api_url}/poses/by-surface/ceiling", timeout=10)
+            floor_poses_resp = requests.get(f"{DEFAULT_API_URL}/poses/by-surface/floor", timeout=10)
+            wall_poses_resp = requests.get(f"{DEFAULT_API_URL}/poses/by-surface/wall", timeout=10)
+            ceiling_poses_resp = requests.get(f"{DEFAULT_API_URL}/poses/by-surface/ceiling", timeout=10)
             
             floor_poses = floor_poses_resp.json().get("poses", []) if floor_poses_resp.ok else []
             wall_poses = wall_poses_resp.json().get("poses", []) if wall_poses_resp.ok else []
@@ -675,7 +675,7 @@ if "analysis_result" in st.session_state:
                 
                 try:
                     recalc_response = requests.post(
-                        f"{api_url}/recalculate",
+                        f"{DEFAULT_API_URL}/recalculate",
                         json={
                             "analysis_id": analysis_id,
                             "overrides": override_list,
