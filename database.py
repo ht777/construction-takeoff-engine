@@ -797,20 +797,37 @@ def bulk_upsert_poses(
                     existing.unit = str(pose_data.get("unit", existing.unit))
                     existing.category = str(pose_data.get("category", existing.category))
                     
-                    # Update price if provided
+                    # Update price if provided (handle NaN from Excel)
                     price = pose_data.get("default_unit_price")
-                    if price and price > 0:
-                        existing.default_unit_price = {"TRY": float(price)}
+                    try:
+                        import math
+                        if price is not None and not (isinstance(price, float) and math.isnan(price)):
+                            price_float = float(price)
+                            if price_float > 0:
+                                existing.default_unit_price = {"TRY": price_float}
+                    except (ValueError, TypeError):
+                        pass  # Invalid price, skip
                     
                     results["updated"] += 1
                 else:
-                    # Insert new
+                    # Insert new - parse price with NaN handling
+                    price = pose_data.get("default_unit_price")
+                    price_dict = {}
+                    try:
+                        import math
+                        if price is not None and not (isinstance(price, float) and math.isnan(price)):
+                            price_float = float(price)
+                            if price_float > 0:
+                                price_dict = {"TRY": price_float}
+                    except (ValueError, TypeError):
+                        pass  # Invalid price, use empty dict
+                    
                     new_pose = RefPose(
                         code=code,
                         description=str(pose_data.get("description", "Tanımsız")),
                         unit=str(pose_data.get("unit", "m²")),
                         category=str(pose_data.get("category", "Diğer")),
-                        default_unit_price={"TRY": float(pose_data.get("default_unit_price", 0))} if pose_data.get("default_unit_price") else {},
+                        default_unit_price=price_dict,
                         is_active=True
                     )
                     session.add(new_pose)
