@@ -280,13 +280,15 @@ with st.sidebar:
         st.caption("💡 Varsayılan şifre: admin123")
         st.caption("🔧 Değiştirmek için: ADMIN_PASSWORD env var")
 
-# Set default values for admin mode (not used but prevents NameError)
-if app_mode == "Admin Paneli":
+# Set default values for non-calculator modes (prevents NameError)
+if app_mode != "Metraj Hesaplayıcı":
     api_url = DEFAULT_API_URL
     drawing_unit = "cm"
     floor_height_cm = 280
     floor_multiplier = 1
-    project_name = "Admin"
+    project_name = "Proje"
+    uploaded_file = None
+    analyze_button = False
 
 
 # =============================================================================
@@ -317,14 +319,14 @@ if app_mode == "Metraj Hesaplayıcı":
     if uploaded_file:
         st.success(f"✅ Dosya yüklendi: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
 
-with col2:
-    st.subheader("⚡ İşlem")
-    
-    analyze_button = st.button(
-        "🚀 Analiz Başlat",
-        disabled=not uploaded_file,
-        use_container_width=True
-    )
+    with col2:
+        st.subheader("⚡ İşlem")
+        
+        analyze_button = st.button(
+            "🚀 Analiz Başlat",
+            disabled=not uploaded_file,
+            use_container_width=True
+        )
 
 
 # =============================================================================
@@ -442,7 +444,7 @@ def parse_rooms_to_dataframe(blocks: list, floor_multiplier: int = 1) -> pd.Data
 # EXECUTE ANALYSIS
 # =============================================================================
 
-if analyze_button and uploaded_file:
+if app_mode == "Metraj Hesaplayıcı" and analyze_button and uploaded_file:
     with st.spinner("🔄 Dosya işleniyor..."):
         try:
             # Prepare request
