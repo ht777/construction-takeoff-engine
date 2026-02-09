@@ -500,7 +500,7 @@ if app_mode == "Metraj Hesaplayıcı" and analyze_button and uploaded_file:
 # DISPLAY RESULTS
 # =============================================================================
 
-if "analysis_result" in st.session_state:
+if app_mode == "Metraj Hesaplayıcı" and "analysis_result" in st.session_state:
     result = st.session_state["analysis_result"]
     floor_mult = st.session_state.get("floor_multiplier", 1)
     proj_name = st.session_state.get("project_name", "Proje")
