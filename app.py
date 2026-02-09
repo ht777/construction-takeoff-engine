@@ -184,7 +184,7 @@ with st.sidebar:
     st.subheader("🎯 Mod Seçimi")
     app_mode = st.radio(
         "Çalışma Modu",
-        options=["Metraj Hesaplayıcı", "Admin Paneli"],
+        options=["Metraj Hesaplayıcı", "📂 Proje Geçmişi", "Admin Paneli"],
         index=0,
         help="Admin paneli için şifre gerekir"
     )
@@ -803,6 +803,117 @@ if "analysis_result" in st.session_state:
             file_name=f"{proj_name}_raw.json",
             mime="application/json"
         )
+
+elif app_mode == "📂 Proje Geçmişi":
+    # ==========================================================================
+    # PROJECT HISTORY MODE (v1.1)
+    # ==========================================================================
+    st.title("📂 Proje Geçmişi")
+    st.markdown("Kaydedilmiş projeleri görüntüleyin ve yükleyin.")
+    
+    st.markdown("---")
+    
+    # Search box
+    col_search, col_refresh = st.columns([3, 1])
+    with col_search:
+        search_term = st.text_input(
+            "🔍 Proje Ara",
+            placeholder="Proje adı ile arayın...",
+            key="project_search"
+        )
+    with col_refresh:
+        st.markdown("<br>", unsafe_allow_html=True)
+        refresh_clicked = st.button("🔄 Yenile", use_container_width=True)
+    
+    # Fetch projects from API
+    try:
+        params = {"limit": 20, "offset": 0}
+        if search_term:
+            params["search"] = search_term
+        
+        response = requests.get(f"{DEFAULT_API_URL}/projects", params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            projects = data.get("projects", [])
+            total = data.get("total", 0)
+            
+            if projects:
+                st.success(f"📊 Toplam {total} proje bulundu")
+                
+                # Display projects as cards
+                for project in projects:
+                    with st.container():
+                        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                        
+                        with col1:
+                            st.markdown(f"**{project['name']}**")
+                            # Format date nicely
+                            created = project.get("created_at", "")
+                            if created:
+                                try:
+                                    from datetime import datetime as dt
+                                    date_obj = dt.fromisoformat(created.replace("Z", "+00:00"))
+                                    date_str = date_obj.strftime("%d.%m.%Y %H:%M")
+                                except:
+                                    date_str = created[:16]
+                                st.caption(f"📅 {date_str}")
+                        
+                        with col2:
+                            area = project.get("total_area_m2", 0)
+                            st.metric("Alan", f"{area:.1f} m²" if area else "-")
+                        
+                        with col3:
+                            room_count = project.get("room_count", 0)
+                            st.metric("Oda", str(room_count) if room_count else "-")
+                        
+                        with col4:
+                            # Load button
+                            if st.button("📂 Yükle", key=f"load_{project['id']}", use_container_width=True):
+                                # Load project from API
+                                with st.spinner("Proje yükleniyor..."):
+                                    load_response = requests.get(
+                                        f"{DEFAULT_API_URL}/projects/{project['id']}",
+                                        timeout=30
+                                    )
+                                    if load_response.status_code == 200:
+                                        loaded_data = load_response.json()
+                                        st.session_state["analysis_result"] = loaded_data
+                                        st.session_state["floor_multiplier"] = 1
+                                        st.session_state["project_name"] = loaded_data.get("project_name", "Yüklenen Proje")
+                                        st.success("✅ Proje yüklendi! Metraj Hesaplayıcı moduna geçin.")
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Proje yüklenemedi!")
+                        
+                        # Delete button (expandable)
+                        with st.expander("⚠️ Tehlikeli İşlemler", expanded=False):
+                            if st.button("🗑️ Projeyi Sil", key=f"delete_{project['id']}", type="secondary"):
+                                delete_response = requests.delete(
+                                    f"{DEFAULT_API_URL}/projects/{project['id']}",
+                                    timeout=10
+                                )
+                                if delete_response.status_code == 200:
+                                    st.success("✅ Proje silindi!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Silme işlemi başarısız!")
+                        
+                        st.markdown("---")
+            else:
+                st.info("📭 Henüz kayıtlı proje bulunmuyor.")
+                st.markdown("""
+                **Proje kaydetmek için:**
+                1. **Metraj Hesaplayıcı** moduna geçin
+                2. Bir DXF/DWG dosyası yükleyin
+                3. Analiz yapın - proje otomatik kaydedilecek
+                """)
+        else:
+            st.error(f"❌ API hatası: {response.status_code}")
+    except requests.exceptions.ConnectionError:
+        st.error("❌ API'ye bağlanılamadı. Backend'in çalıştığından emin olun.")
+    except Exception as e:
+        st.error(f"❌ Hata: {str(e)}")
 
 else:
     # ==========================================================================

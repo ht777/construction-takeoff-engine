@@ -697,6 +697,62 @@ async def analyze_cad_file(
         # Cleanup expired cache entries
         cleanup_expired_cache()
         
+        # v1.1: Save project to database for history
+        try:
+            # Create Project record
+            project_record = Project(
+                id=uuid.UUID(analysis_id),
+                user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),  # Default user for MVP
+                name=project_name,
+                description=f"Analiz: {project_name}",
+                meta_data={
+                    "project_stats": {
+                        "total_area_m2": response.summary.get("total_area_m2", 0),
+                        "block_count": response.summary.get("block_count", 0),
+                        "room_count": response.summary.get("room_count", 0),
+                        "floor_height_m": floor_height_m
+                    }
+                },
+                original_filename=upload_file.filename,
+                file_hash=result.file_hash,
+                status="completed",
+                warnings=[{"type": w.warning_type, "message": w.message, "location": list(w.location) if w.location else None} for w in result.warnings],
+                processed_at=datetime.now(timezone.utc)
+            )
+            db.add(project_record)
+            
+            # Create Quantity records for each room/material
+            for block in result.blocks:
+                for room in block.rooms:
+                    # Get material assignments
+                    calculator = QuantityCalculator()
+                    materials = calculator.calculate_room_quantities(room, floor_height_m)
+                    
+                    for mat in materials:
+                        qty_record = Quantity(
+                            project_id=uuid.UUID(analysis_id),
+                            block_name=block.name,
+                            floor_name="Zemin Kat",  # Default for MVP
+                            room_name=room.name,
+                            room_type=room.room_type.value,
+                            area_m2=room.area_m2,
+                            perimeter_m=room.perimeter_m,
+                            wall_area_m2=room.wall_length_m * floor_height_m,
+                            opening_count=len(room.openings),
+                            pose_code=mat["pose_code"],
+                            pose_category=mat["category"],
+                            quantity=mat["quantity"],
+                            unit=mat["unit"]
+                        )
+                        db.add(qty_record)
+            
+            await db.commit()
+            logger.info(f"Saved project {analysis_id} to database with {len(result.blocks)} blocks")
+        except Exception as save_error:
+            logger.warning(f"Failed to save project to database: {save_error}")
+            # Don't fail the request if save fails - analysis result is still valid
+            await db.rollback()
+        
         return response
         
     except HTTPException:
@@ -963,6 +1019,255 @@ async def recalculate_bom(
         "bom_summary": bom_list,
         "recalculated_at": datetime.now(timezone.utc).isoformat()
     }
+
+
+# =============================================================================
+# v1.1 PROJECT HISTORY ENDPOINTS
+# =============================================================================
+
+class ProjectListItem(BaseModel):
+    """Project summary for list view."""
+    id: str
+    name: str
+    created_at: str
+    status: str
+    total_area_m2: Optional[float] = 0
+    room_count: Optional[int] = 0
+    block_count: Optional[int] = 0
+
+
+class ProjectListResponse(BaseModel):
+    """Projects list response with pagination."""
+    projects: list[ProjectListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+@app.get("/projects", response_model=ProjectListResponse)
+async def list_projects(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List all saved projects with pagination.
+    
+    Returns project summaries ordered by date (newest first).
+    """
+    try:
+        # Build query
+        query = """
+            SELECT id, name, created_at, status, meta_data
+            FROM projects
+            WHERE status = 'completed'
+        """
+        params = {"limit": limit, "offset": offset}
+        
+        if search:
+            query += " AND name ILIKE :search"
+            params["search"] = f"%{search}%"
+        
+        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        
+        result = await db.execute(text(query), params)
+        rows = result.fetchall()
+        
+        # Count total
+        count_query = "SELECT COUNT(*) FROM projects WHERE status = 'completed'"
+        if search:
+            count_query += " AND name ILIKE :search"
+        count_result = await db.execute(text(count_query), {"search": f"%{search}%"} if search else {})
+        total = count_result.scalar()
+        
+        projects = []
+        for row in rows:
+            meta = row.meta_data or {}
+            stats = meta.get("project_stats", {})
+            projects.append(ProjectListItem(
+                id=str(row.id),
+                name=row.name,
+                created_at=row.created_at.isoformat() if row.created_at else "",
+                status=row.status or "unknown",
+                total_area_m2=stats.get("total_area_m2", 0),
+                room_count=stats.get("room_count", 0),
+                block_count=stats.get("block_count", 0)
+            ))
+        
+        return ProjectListResponse(
+            projects=projects,
+            total=total or 0,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        logger.error(f"Error listing projects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/projects/{project_id}")
+async def get_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Load a specific project with all quantities.
+    
+    Reconstructs the full AnalysisResponse format for frontend compatibility.
+    """
+    try:
+        # Get project
+        project_result = await db.execute(
+            text("SELECT * FROM projects WHERE id = :id"),
+            {"id": project_id}
+        )
+        project = project_result.fetchone()
+        
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get quantities
+        qty_result = await db.execute(
+            text("""
+                SELECT q.*, rp.description as pose_description
+                FROM quantities q
+                LEFT JOIN ref_poses rp ON q.pose_code = rp.code
+                WHERE q.project_id = :project_id
+                ORDER BY q.block_name, q.floor_name, q.room_name
+            """),
+            {"project_id": project_id}
+        )
+        quantities = qty_result.fetchall()
+        
+        # Reconstruct blocks structure
+        blocks_dict = {}
+        for qty in quantities:
+            block_name = qty.block_name
+            floor_name = qty.floor_name
+            room_name = qty.room_name
+            
+            if block_name not in blocks_dict:
+                blocks_dict[block_name] = {"name": block_name, "floors": {}, "total_area_m2": 0}
+            
+            if floor_name not in blocks_dict[block_name]["floors"]:
+                blocks_dict[block_name]["floors"][floor_name] = {"name": floor_name, "rooms": {}}
+            
+            if room_name not in blocks_dict[block_name]["floors"][floor_name]["rooms"]:
+                blocks_dict[block_name]["floors"][floor_name]["rooms"][room_name] = {
+                    "name": room_name,
+                    "room_type": qty.room_type,
+                    "area_m2": float(qty.area_m2) if qty.area_m2 else 0,
+                    "perimeter_m": float(qty.perimeter_m) if qty.perimeter_m else 0,
+                    "wall_area_m2": float(qty.wall_area_m2) if qty.wall_area_m2 else 0,
+                    "opening_count": qty.opening_count or 0,
+                    "materials": []
+                }
+                blocks_dict[block_name]["total_area_m2"] += float(qty.area_m2) if qty.area_m2 else 0
+            
+            # Add material to room
+            blocks_dict[block_name]["floors"][floor_name]["rooms"][room_name]["materials"].append({
+                "pose_code": qty.pose_code,
+                "category": qty.pose_category,
+                "quantity": float(qty.quantity) if qty.quantity else 0,
+                "unit": qty.unit,
+                "description": qty.pose_description or qty.pose_code
+            })
+        
+        # Convert to list structure
+        blocks_response = []
+        for block_name, block_data in blocks_dict.items():
+            floors_list = []
+            for floor_name, floor_data in block_data["floors"].items():
+                rooms_list = list(floor_data["rooms"].values())
+                floors_list.append({
+                    "name": floor_name,
+                    "rooms": rooms_list,
+                    "total_area_m2": sum(r["area_m2"] for r in rooms_list)
+                })
+            blocks_response.append({
+                "name": block_name,
+                "floors": floors_list,
+                "total_area_m2": block_data["total_area_m2"]
+            })
+        
+        # Aggregate BOM
+        bom_dict = {}
+        for qty in quantities:
+            code = qty.pose_code
+            if code not in bom_dict:
+                bom_dict[code] = {
+                    "pose_code": code,
+                    "description": qty.pose_description or code,
+                    "category": qty.pose_category,
+                    "unit": qty.unit,
+                    "total_quantity": 0,
+                    "recipe_breakdown": qty.recipe_breakdown or []
+                }
+            bom_dict[code]["total_quantity"] += float(qty.quantity) if qty.quantity else 0
+        
+        bom_summary = sorted(bom_dict.values(), key=lambda x: (x["category"], x["pose_code"]))
+        
+        # Get meta stats
+        meta = project.meta_data or {}
+        stats = meta.get("project_stats", {})
+        
+        return {
+            "project_id": str(project.id),
+            "project_name": project.name,
+            "calculated_at": project.processed_at.isoformat() if project.processed_at else project.created_at.isoformat(),
+            "file_hash": project.file_hash,
+            "summary": {
+                "total_area_m2": stats.get("total_area_m2", 0),
+                "block_count": stats.get("block_count", 0),
+                "room_count": stats.get("room_count", 0),
+                "floor_height_m": stats.get("floor_height_m", 2.8)
+            },
+            "blocks": blocks_response,
+            "bom_summary": bom_summary,
+            "floor_plan_image": None,  # Will be regenerated on demand
+            "warnings": project.warnings or [],
+            "stats": stats
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/projects/{project_id}")
+async def delete_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a project and all associated quantities.
+    """
+    try:
+        # Check if project exists
+        check_result = await db.execute(
+            text("SELECT id FROM projects WHERE id = :id"),
+            {"id": project_id}
+        )
+        if not check_result.fetchone():
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Delete project (quantities will cascade)
+        await db.execute(
+            text("DELETE FROM projects WHERE id = :id"),
+            {"id": project_id}
+        )
+        await db.commit()
+        
+        logger.info(f"Deleted project {project_id}")
+        return {"status": "success", "message": "Project deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting project {project_id}: {e}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================
