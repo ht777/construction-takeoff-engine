@@ -713,7 +713,7 @@ async def analyze_cad_file(
                         "floor_height_m": floor_height_m
                     }
                 },
-                original_filename=upload_file.filename,
+                original_filename=file.filename,
                 file_hash=result.file_hash,
                 status="completed",
                 warnings=[{"type": w.warning_type, "message": w.message, "location": list(w.location) if w.location else None} for w in result.warnings],
