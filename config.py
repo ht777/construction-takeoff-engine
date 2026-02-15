@@ -42,7 +42,7 @@ class DatabaseConfig:
     port: int = int(os.getenv("DB_PORT", "5432"))
     database: str = os.getenv("DB_NAME", "construction_takeoff")
     username: str = os.getenv("DB_USER", "postgres")
-    password: str = os.getenv("DB_PASSWORD", "postgres")
+    password: str = os.getenv("DB_PASSWORD", "securepassword123")
     
     # Connection pool settings for high-load scenarios
     pool_size: int = int(os.getenv("DB_POOL_SIZE", "10"))
@@ -144,7 +144,7 @@ class GeometryConfig:
     # eps: Maximum distance between two samples in a cluster (meters)
     # min_samples: Minimum entities to form a cluster
     DBSCAN_EPS: float = 10.0  # 10 meters between buildings
-    DBSCAN_MIN_SAMPLES: int = 5
+    DBSCAN_MIN_SAMPLES: int = 2  # Lowered from 5 to support small residential blocks
     
     # Default building parameters
     DEFAULT_FLOOR_HEIGHT_M: float = 2.80  # 280cm kat yüksekliği
@@ -168,6 +168,9 @@ class RoomType(Enum):
     TYPE_WET = "wet"            # Banyo, WC, Duş
     TYPE_KITCHEN = "kitchen"    # Mutfak
     TYPE_HALLWAY = "hallway"    # Antre, Hol, Koridor
+    TYPE_STAIRS = "stairs"      # Merdiven (v1.2)
+    TYPE_ELEVATOR = "elevator"  # Asansör, Şaft (v1.2)
+    TYPE_ENTRANCE = "entrance"  # Bina Girişi (v1.2)
     TYPE_OUTDOOR = "outdoor"    # Balkon, Teras
     TYPE_STORAGE = "storage"    # Depo, Kiler
     TYPE_UNKNOWN = "unknown"    # Fallback
@@ -200,8 +203,17 @@ ROOM_KEYWORDS: dict[RoomType, list[str]] = {
         "MUTFAK", "KITCHEN", "ANTRE MUTFAK", "ACIK MUTFAK"
     ],
     RoomType.TYPE_HALLWAY: [
-        "ANTRE", "HOL", "HALL", "KORIDOR", "CORRIDOR", "GIRIS",
-        "ENTRY", "VESTIBUL", "MERDIVEN", "STAIR"
+        "ANTRE", "HOL", "HALL", "KORIDOR", "CORRIDOR",
+        "VESTIBUL"
+    ],
+    RoomType.TYPE_STAIRS: [
+        "MERDIVEN", "STAIR", "BASAMAK", "SAHANLIK"
+    ],
+    RoomType.TYPE_ELEVATOR: [
+        "ASANSOR", "ELEVATOR", "SAFT", "SHAFT", "LIFT"
+    ],
+    RoomType.TYPE_ENTRANCE: [
+        "BINA GIRISI", "BLOK GIRISI", "ENTRANCE", "LOBBY", "GIRIS", "ENTRY"
     ],
     RoomType.TYPE_OUTDOOR: [
         "BALKON", "BALCONY", "TERAS", "TERRACE", "VERANDA", "SUNDURMA",
@@ -250,6 +262,24 @@ ROOM_MATERIALS: dict[RoomType, MaterialAssignment] = {
         wall_pose="27.581/1",       # Saten Boya
         ceiling_pose="27.535/1",    # Plastik Boya
     ),
+    RoomType.TYPE_STAIRS: MaterialAssignment(
+        floor_pose="26.201",        # Mermer (Basamak)
+        wall_pose="27.581/1",       # Saten Boya
+        ceiling_pose="27.535/1",
+        additional_poses=["23.001"] # Demir Korkuluk
+    ),
+    RoomType.TYPE_ELEVATOR: MaterialAssignment(
+        floor_pose="",              # Boşluk
+        wall_pose="27.501",         # Kara Sıva
+        ceiling_pose="",
+        additional_poses=[]
+    ),
+    RoomType.TYPE_ENTRANCE: MaterialAssignment(
+        floor_pose="26.201",        # Granit/Mermer
+        wall_pose="27.581/1",       # Saten Boya
+        ceiling_pose="27.535/1",
+        additional_poses=[]
+    ),
     RoomType.TYPE_OUTDOOR: MaterialAssignment(
         floor_pose="26.021/1",      # Granit
         wall_pose="25.034/2",       # Dış Sıva
@@ -276,7 +306,7 @@ ROOM_MATERIALS: dict[RoomType, MaterialAssignment] = {
 class APIConfig:
     """FastAPI application settings."""
     title: str = "Construction Quantity Takeoff API"
-    version: str = "1.0.0"
+    version: str = "1.2.0"
     description: str = "İnşaat Metraj ve Maliyet Otomasyonu - Türkiye Pazarı"
     
     # File upload limits

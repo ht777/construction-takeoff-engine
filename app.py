@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Optional, Any
 
 # Get backend URL from environment variable (Docker) or default (local)
-DEFAULT_API_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
+DEFAULT_API_URL = os.environ.get("BACKEND_URL", "http://localhost:8088")
 
 
 # =============================================================================
@@ -198,7 +198,7 @@ with st.sidebar:
         api_url = st.text_input(
             "API URL",
             value=DEFAULT_API_URL,
-            help="FastAPI backend adresi (Docker: http://backend:8000)"
+            help="FastAPI backend adresi (varsayılan: http://localhost:8088)"
         )
         
         st.markdown("---")
@@ -280,69 +280,14 @@ with st.sidebar:
         st.caption("💡 Varsayılan şifre: admin123")
         st.caption("🔧 Değiştirmek için: ADMIN_PASSWORD env var")
 
-# Set default values for non-calculator modes (prevents NameError)
-if app_mode != "Metraj Hesaplayıcı":
-    api_url = DEFAULT_API_URL
-    drawing_unit = "cm"
-    floor_height_cm = 280
-    floor_multiplier = 1
-    project_name = "Proje"
-    uploaded_file = None
-    analyze_button = False
-
 
 # =============================================================================
-# MAIN CONTENT - MODE BASED
-# =============================================================================
-
-if app_mode == "Metraj Hesaplayıcı":
-    # ==========================================================================
-    # CALCULATOR MODE (Original UI)
-    # ==========================================================================
-    st.title("🏗️ İnşaat Metraj Otomasyonu")
-    st.markdown("**DWG/DXF** dosyanızı yükleyin, otomatik metraj çıktısı alın.")
-
-    st.markdown("---")
-
-    # File Upload Section
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.subheader("📂 Dosya Yükleme")
-    
-    uploaded_file = st.file_uploader(
-        "DWG veya DXF dosyası seçin",
-        type=["dwg", "dxf"],
-        help="AutoCAD formatında mimari çizim dosyası"
-    )
-    
-    if uploaded_file:
-        st.success(f"✅ Dosya yüklendi: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
-
-    with col2:
-        st.subheader("⚡ İşlem")
-        
-        analyze_button = st.button(
-            "🚀 Analiz Başlat",
-            disabled=not uploaded_file,
-            use_container_width=True
-        )
-
-
-# =============================================================================
-# ANALYSIS LOGIC
+# HELPER FUNCTIONS
 # =============================================================================
 
 def parse_bom_to_dataframe(bom_summary: list, floor_multiplier: int = 1) -> pd.DataFrame:
     """
     Convert BOM JSON to a formatted DataFrame for display and export.
-    
-    Columns:
-    - Poz No: Pose code
-    - Açıklama: Description  
-    - Miktar: Quantity (multiplied by floor count)
-    - Birim: Unit
-    - Hesap Detayı: Recipe breakdown
     """
     rows = []
     
@@ -441,371 +386,689 @@ def parse_rooms_to_dataframe(blocks: list, floor_multiplier: int = 1) -> pd.Data
 
 
 # =============================================================================
-# EXECUTE ANALYSIS
+# MAIN CONTENT - MODE BASED
 # =============================================================================
 
-if app_mode == "Metraj Hesaplayıcı" and analyze_button and uploaded_file:
-    with st.spinner("🔄 Dosya işleniyor..."):
-        try:
-            # Prepare request
-            files = {
-                "file": (uploaded_file.name, uploaded_file.getvalue(), "application/octet-stream")
-            }
-            data = {
-                "drawing_unit": drawing_unit,
-                "project_name": project_name,
-                "floor_height_cm": floor_height_cm
-            }
-            
-            # Send to API
-            response = requests.post(
-                f"{api_url}/analyze",
-                files=files,
-                data=data,
-                timeout=120
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                # Store in session state
-                st.session_state["analysis_result"] = result
-                st.session_state["floor_multiplier"] = floor_multiplier
-                st.session_state["project_name"] = project_name
-                
-                st.success("✅ Analiz tamamlandı!")
-                
-            elif response.status_code == 422:
-                error = response.json()
-                st.error(f"❌ İşleme hatası: {error.get('detail', {}).get('message', 'Bilinmeyen hata')}")
-                
-                # Show warnings if any
-                warnings = error.get("detail", {}).get("warnings", [])
-                if warnings:
-                    with st.expander("⚠️ Uyarılar"):
-                        for w in warnings:
-                            st.warning(f"{w['type']}: {w['message']}")
-            else:
-                st.error(f"❌ API hatası: {response.status_code} - {response.text[:200]}")
-                
-        except requests.exceptions.Timeout:
-            st.error("❌ Zaman aşımı: İşlem 120 saniyeden uzun sürdü.")
-        except requests.exceptions.ConnectionError:
-            st.error("❌ Bağlantı hatası: API'ye ulaşılamıyor. Sunucunun çalıştığından emin olun.")
-        except Exception as e:
-            st.error(f"❌ Beklenmeyen hata: {str(e)}")
+if app_mode == "Metraj Hesaplayıcı":
+    # ==========================================================================
+    # CALCULATOR MODE (Original UI)
+    # ==========================================================================
+    st.title("🏗️ İnşaat Metraj Otomasyonu")
+    st.markdown("**DWG/DXF** dosyanızı yükleyin, otomatik metraj çıktısı alın.")
 
-
-# =============================================================================
-# DISPLAY RESULTS
-# =============================================================================
-
-if app_mode == "Metraj Hesaplayıcı" and "analysis_result" in st.session_state:
-    result = st.session_state["analysis_result"]
-    floor_mult = st.session_state.get("floor_multiplier", 1)
-    proj_name = st.session_state.get("project_name", "Proje")
-    
     st.markdown("---")
-    st.subheader("📊 Analiz Sonuçları")
-    
-    # Summary Cards
-    summary = result.get("summary", {})
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
+
+    # File Upload Section
+    col1, col2 = st.columns([2, 1])
+
     with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p class="metric-value">{summary.get('total_area_m2', 0):.1f}</p>
-            <p class="metric-label">Toplam Alan (m²)</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.subheader("📂 Dosya Yükleme")
     
+    uploaded_file = st.file_uploader(
+        "DWG veya DXF dosyası seçin",
+        type=["dwg", "dxf"],
+        help="AutoCAD formatında mimari çizim dosyası"
+    )
+    
+    if uploaded_file:
+        st.success(f"✅ Dosya yüklendi: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+
     with col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p class="metric-value">{summary.get('block_count', 0)}</p>
-            <p class="metric-label">Blok Sayısı</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <p class="metric-value">{summary.get('room_count', 0)}</p>
-            <p class="metric-label">Oda Sayısı</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        if floor_mult > 1:
-            multiplied_area = summary.get('total_area_m2', 0) * floor_mult
-            st.markdown(f"""
-            <div class="metric-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
-                <p class="metric-value">{multiplied_area:.1f}</p>
-                <p class="metric-label">Çarpanlı Alan ({floor_mult}x)</p>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div class="metric-card">
-                <p class="metric-value">{summary.get('floor_height_m', 2.8)}</p>
-                <p class="metric-label">Kat Yüksekliği (m)</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    # v1.1: Floor Plan Visualization
-    floor_plan_b64 = result.get("floor_plan_image")
-    if floor_plan_b64:
-        with st.expander("🗺️ Kat Planı Görselleştirmesi", expanded=True):
-            try:
-                # Decode base64 to bytes
-                image_bytes = base64.b64decode(floor_plan_b64)
-                st.image(
-                    image_bytes,
-                    caption="Tespit Edilen Odalar ve Alanlar",
-                    use_container_width=True
-                )
-                st.markdown("""
-                <div style="text-align: center; color: #888; font-size: 0.9em;">
-                    💡 Renk kodları: Mavi=Salon, Yeşil=Yatak Odası, Turuncu=Mutfak, Mavi-Yeşil=Islak Hacim
-                </div>
-                """, unsafe_allow_html=True)
-            except Exception as e:
-                st.warning(f"Görsel yüklenemedi: {e}")
-    
-    # Warnings
-    warnings = result.get("warnings", [])
-    if warnings:
-        with st.expander(f"⚠️ Uyarılar ({len(warnings)} adet)", expanded=False):
-            for w in warnings:
-                st.warning(f"**{w['type']}**: {w['message']}")
-    
-    # =========================================================================
-    # v1.1: MATERIAL PREFERENCES SECTION
-    # =========================================================================
-    
-    with st.expander("🛠️ Malzeme Tercihleri (v1.1)", expanded=False):
-        st.markdown("""
-        Bu bölümde her oda için otomatik atanan malzemeleri değiştirebilirsiniz.
-        Değişiklik yaptıktan sonra **"Metrajı Güncelle"** butonuna tıklayın.
-        """)
+        st.subheader("⚡ İşlem")
         
-        # Get detected rooms from blocks
-        blocks = result.get("blocks", [])
-        analysis_id = result.get("project_id", "")
-        
-        # Fetch available poses by surface type from API
-        try:
-            floor_poses_resp = requests.get(f"{DEFAULT_API_URL}/poses/by-surface/floor", timeout=10)
-            wall_poses_resp = requests.get(f"{DEFAULT_API_URL}/poses/by-surface/wall", timeout=10)
-            ceiling_poses_resp = requests.get(f"{DEFAULT_API_URL}/poses/by-surface/ceiling", timeout=10)
-            
-            floor_poses = floor_poses_resp.json().get("poses", []) if floor_poses_resp.ok else []
-            wall_poses = wall_poses_resp.json().get("poses", []) if wall_poses_resp.ok else []
-            ceiling_poses = ceiling_poses_resp.json().get("poses", []) if ceiling_poses_resp.ok else []
-        except:
-            floor_poses = []
-            wall_poses = []
-            ceiling_poses = []
-        
-        # Initialize material overrides in session state
-        if "material_overrides" not in st.session_state:
-            st.session_state["material_overrides"] = {}
-        
-        # Show room-by-room material selection
-        room_counter = 0
-        for block in blocks:
-            for floor in block.get("floors", []):
-                for room in floor.get("rooms", []):
-                    room_name = room.get("name", f"Oda {room_counter}")
-                    room_type = room.get("room_type", "unknown")
-                    room_area = room.get("area_m2", 0)
-                    room_id = f"room_{hash(room_name) % 10000}"
-                    
-                    st.markdown(f"#### {room_name} ({room_area:.1f} m²)")
-                    
-                    # Get current materials from room
-                    current_materials = room.get("materials", [])
-                    current_floor = next((m for m in current_materials if "döşeme" in m.get("category", "").lower() or "floor" in m.get("category", "").lower()), None)
-                    current_wall = next((m for m in current_materials if "duvar" in m.get("category", "").lower() or "wall" in m.get("category", "").lower()), None)
-                    current_ceiling = next((m for m in current_materials if "tavan" in m.get("category", "").lower() or "ceiling" in m.get("category", "").lower()), None)
-                    
-                    col_f, col_w, col_c = st.columns(3)
-                    
-                    # Floor material selector
-                    with col_f:
-                        floor_options = ["Otomatik"] + [p["display"] for p in floor_poses]
-                        floor_default = current_floor.get("pose_code", "Otomatik") if current_floor else "Otomatik"
-                        selected_floor = st.selectbox(
-                            "🪵 Döşeme",
-                            options=floor_options,
-                            key=f"floor_{room_id}",
-                            help="Döşeme malzemesi seçin"
-                        )
-                        if selected_floor != "Otomatik":
-                            st.session_state["material_overrides"][f"{room_id}_floor"] = selected_floor.split(" - ")[0]
-                    
-                    # Wall material selector
-                    with col_w:
-                        wall_options = ["Otomatik"] + [p["display"] for p in wall_poses]
-                        wall_default = current_wall.get("pose_code", "Otomatik") if current_wall else "Otomatik"
-                        selected_wall = st.selectbox(
-                            "🧱 Duvar",
-                            options=wall_options,
-                            key=f"wall_{room_id}",
-                            help="Duvar malzemesi seçin"
-                        )
-                        if selected_wall != "Otomatik":
-                            st.session_state["material_overrides"][f"{room_id}_wall"] = selected_wall.split(" - ")[0]
-                    
-                    # Ceiling material selector
-                    with col_c:
-                        ceiling_options = ["Otomatik"] + [p["display"] for p in ceiling_poses]
-                        ceiling_default = current_ceiling.get("pose_code", "Otomatik") if current_ceiling else "Otomatik"
-                        selected_ceiling = st.selectbox(
-                            "🔲 Tavan",
-                            options=ceiling_options,
-                            key=f"ceiling_{room_id}",
-                            help="Tavan malzemesi seçin"
-                        )
-                        if selected_ceiling != "Otomatik":
-                            st.session_state["material_overrides"][f"{room_id}_ceiling"] = selected_ceiling.split(" - ")[0]
-                    
-                    st.markdown("---")
-                    room_counter += 1
-        
-        # Recalculate button
-        if st.button("🔄 Metrajı Güncelle", type="primary", use_container_width=True):
-            overrides = st.session_state.get("material_overrides", {})
-            
-            if not overrides:
-                st.info("Değişiklik yapılmadı. Varsayılan malzemeler kullanılıyor.")
-            else:
-                # Build override list for API
-                override_list = []
-                for key, pose_code in overrides.items():
-                    parts = key.rsplit("_", 1)
-                    if len(parts) == 2:
-                        room_id, surface_type = parts
-                        override_list.append({
-                            "room_id": room_id,
-                            "surface_type": surface_type,
-                            "new_pose_code": pose_code
-                        })
-                
-                try:
-                    recalc_response = requests.post(
-                        f"{DEFAULT_API_URL}/recalculate",
-                        json={
-                            "analysis_id": analysis_id,
-                            "overrides": override_list,
-                            "floor_height_cm": int(summary.get("floor_height_m", 2.8) * 100)
-                        },
-                        timeout=60
-                    )
-                    
-                    if recalc_response.ok:
-                        recalc_result = recalc_response.json()
-                        # Update BOM in session state
-                        result["bom_summary"] = recalc_result.get("bom_summary", [])
-                        st.session_state["analysis_result"] = result
-                        st.success(f"✅ Metraj güncellendi! {recalc_result.get('overrides_applied', 0)} değişiklik uygulandı.")
-                        st.rerun()
-                    else:
-                        st.error(f"❌ Güncelleme hatası: {recalc_response.text[:200]}")
-                except Exception as e:
-                    st.error(f"❌ Bağlantı hatası: {str(e)}")
-    
-    # Tabs for different views
-    tab1, tab2, tab3 = st.tabs(["📋 Metraj (BOM)", "🏠 Oda Detayları", "📁 Ham JSON"])
-    
-    with tab1:
-        st.subheader("📋 Malzeme Listesi (Bill of Materials)")
-        
-        bom_df = parse_bom_to_dataframe(result.get("bom_summary", []), floor_mult)
-        
-        if not bom_df.empty:
-            # Display styled dataframe
-            st.dataframe(
-                bom_df,
-                use_container_width=True,
-                height=400,
-                column_config={
-                    "Poz No": st.column_config.TextColumn("Poz No", width="small"),
-                    "Açıklama": st.column_config.TextColumn("Açıklama", width="medium"),
-                    "Miktar": st.column_config.NumberColumn("Miktar", format="%.2f"),
-                    "Birim": st.column_config.TextColumn("Birim", width="small"),
-                    "Kategori": st.column_config.TextColumn("Kategori", width="small"),
-                    "Hesap Detayı (Reçete)": st.column_config.TextColumn("Hesap Detayı", width="large"),
-                }
-            )
-            
-            # Category Summary
-            st.markdown("#### 📊 Kategori Özeti")
-            category_summary = bom_df.groupby("Kategori").agg({
-                "Poz No": "count"
-            }).rename(columns={"Poz No": "Poz Sayısı"})
-            st.dataframe(category_summary, use_container_width=True)
-            
-            # Excel Download
-            st.markdown("---")
-            
-            excel_data = create_excel_download(bom_df, proj_name, summary)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            filename = f"{proj_name.replace(' ', '_')}_Metraj_{timestamp}.xlsx"
-            
-            st.download_button(
-                label="📥 Excel İndir (.xlsx)",
-                data=excel_data,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        else:
-            st.info("BOM verisi bulunamadı.")
-    
-    with tab2:
-        st.subheader("🏠 Oda Bazlı Detaylar")
-        
-        rooms_df = parse_rooms_to_dataframe(result.get("blocks", []), floor_mult)
-        
-        if not rooms_df.empty:
-            st.dataframe(
-                rooms_df,
-                use_container_width=True,
-                height=400,
-                column_config={
-                    "Alan (m²)": st.column_config.NumberColumn("Alan (m²)", format="%.2f"),
-                    "Çevre (m)": st.column_config.NumberColumn("Çevre (m)", format="%.2f"),
-                    "Duvar Alanı (m²)": st.column_config.NumberColumn("Duvar Alanı (m²)", format="%.2f"),
-                }
-            )
-            
-            # Room type distribution
-            st.markdown("#### 📊 Oda Tipi Dağılımı")
-            room_type_counts = rooms_df["Tip"].value_counts()
-            st.bar_chart(room_type_counts)
-        else:
-            st.info("Oda verisi bulunamadı.")
-    
-    with tab3:
-        st.subheader("📁 Ham JSON Yanıtı")
-        
-        st.json(result)
-        
-        # Download JSON
-        json_str = json.dumps(result, indent=2, ensure_ascii=False)
-        st.download_button(
-            label="📥 JSON İndir",
-            data=json_str,
-            file_name=f"{proj_name}_raw.json",
-            mime="application/json"
+        analyze_button = st.button(
+            "🚀 Analiz Başlat",
+            disabled=not uploaded_file,
+            use_container_width=True
         )
 
+    # =============================================================================
+    # ANALYSIS LOGIC & RESULTS DISPLAY
+    # =============================================================================
+
+    if analyze_button and uploaded_file:
+        with st.spinner("🔄 Dosya işleniyor..."):
+            try:
+                # Prepare request
+                files = {
+                    "file": (uploaded_file.name, uploaded_file.getvalue(), "application/octet-stream")
+                }
+                data = {
+                    "drawing_unit": drawing_unit,
+                    "project_name": project_name,
+                    "floor_height_cm": floor_height_cm
+                }
+                
+                # Send to API
+                response = requests.post(
+                    f"{api_url}/analyze",
+                    files=files,
+                    data=data,
+                    timeout=120
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    
+                    # Store in session state
+                    st.session_state["analysis_result"] = result
+                    st.session_state["floor_multiplier"] = floor_multiplier
+                    st.session_state["project_name"] = project_name
+                    # Persist project_id in URL for F5 survival
+                    if result.get("project_id"):
+                        st.query_params["pid"] = result["project_id"]
+                    
+                    st.success("✅ Analiz tamamlandı!")
+                    
+                elif response.status_code == 422:
+                    error = response.json()
+                    st.error(f"❌ İşleme hatası: {error.get('detail', {}).get('message', 'Bilinmeyen hata')}")
+                    
+                    # Show warnings if any
+                    warnings = error.get("detail", {}).get("warnings", [])
+                    if warnings:
+                        with st.expander("⚠️ Uyarılar"):
+                            for w in warnings:
+                                st.warning(f"{w['type']}: {w['message']}")
+                else:
+                    st.error(f"❌ API hatası: {response.status_code} - {response.text[:200]}")
+                    
+            except requests.exceptions.Timeout:
+                st.error("❌ Zaman aşımı: İşlem 120 saniyeden uzun sürdü.")
+            except requests.exceptions.ConnectionError:
+                st.error("❌ Bağlantı hatası: API'ye ulaşılamıyor. Sunucunun çalıştığından emin olun.")
+            except Exception as e:
+                st.error(f"❌ Beklenmeyen hata: {str(e)}")
+
+    # AUTO-RESTORE: If session is empty but project_id in URL (F5 survival)
+    if "analysis_result" not in st.session_state and "pid" in st.query_params:
+        _pid = st.query_params["pid"]
+        try:
+            _resp = requests.get(f"{api_url}/projects/{_pid}", timeout=15)
+            if _resp.status_code == 200:
+                _data = _resp.json()
+                st.session_state["analysis_result"] = _data
+                st.session_state["floor_multiplier"] = 1
+                st.session_state["project_name"] = _data.get("project_name", "Yüklenen Proje")
+        except Exception:
+            pass  # Silently fail — user can re-upload
+
+    # DISPLAY RESULTS SECTION (Moved inside the same if app_mode block)
+    if "analysis_result" in st.session_state:
+        result = st.session_state["analysis_result"]
+        floor_mult = st.session_state.get("floor_multiplier", 1)
+        proj_name = st.session_state.get("project_name", "Proje")
+        
+        st.markdown("---")
+        st.subheader("📊 Analiz Sonuçları")
+        
+        # Summary Cards
+        summary = result.get("summary", {})
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <p class="metric-value">{summary.get('total_area_m2', 0):.1f}</p>
+                <p class="metric-label">Toplam Alan (m²)</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <p class="metric-value">{summary.get('block_count', 0)}</p>
+                <p class="metric-label">Blok Sayısı</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <p class="metric-value">{summary.get('room_count', 0)}</p>
+                <p class="metric-label">Oda Sayısı</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            if floor_mult > 1:
+                multiplied_area = summary.get('total_area_m2', 0) * floor_mult
+                st.markdown(f"""
+                <div class="metric-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                    <p class="metric-value">{multiplied_area:.1f}</p>
+                    <p class="metric-label">Çarpanlı Alan ({floor_mult}x)</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <p class="metric-value">{summary.get('floor_height_m', 2.8)}</p>
+                    <p class="metric-label">Kat Yüksekliği (m)</p>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Floor Plan Visualization — always regenerate from current data
+        # so Inspector edits (added openings, changed room types) are reflected
+        floor_plan_b64 = None
+        try:
+            from visualization import generate_floor_plan_from_data
+            blocks_data = result.get("blocks", [])
+            if blocks_data:
+                floor_plan_b64 = generate_floor_plan_from_data(
+                    blocks_data,
+                    title=f"Kat Planı — {result.get('project_name', proj_name)}",
+                    dark_mode=True
+                )
+        except Exception as e:
+            # Fallback to stored image if renderer fails
+            floor_plan_b64 = result.get("floor_plan_image")
+            if not floor_plan_b64:
+                st.warning(f"Kat planı üretilemedi: {e}")
+        
+        if floor_plan_b64:
+            with st.expander("🗺️ Kat Planı Görselleştirmesi", expanded=True):
+                try:
+                    image_bytes = base64.b64decode(floor_plan_b64)
+                    st.image(
+                        image_bytes,
+                        caption="Tespit Edilen Odalar ve Açıklıklar (Kapı: kesikli sarı, Pencere: cam göbeği)",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.warning(f"Görsel yüklenemedi: {e}")
+        
+        # Warnings
+        warnings = result.get("warnings", [])
+        if warnings:
+            with st.expander(f"⚠️ Uyarılar ({len(warnings)} adet)", expanded=False):
+                for w in warnings:
+                    st.warning(f"**{w['type']}**: {w['message']}")
+
+        # v1.2: MATERIAL PREFERENCES — Redesigned
+        with st.expander("🎨 Malzeme Tercihleri", expanded=False):
+            st.caption("Her oda için zemin, duvar ve tavan malzemesini seçin.")
+            
+            # Material catalog with Turkish descriptions
+            FLOOR_MATERIALS = {
+                "26.006/1": "🟫 Seramik Karo (30×30)",
+                "26.011/1": "🪵 Laminat Parke",
+                "26.021/1": "🏔️ Doğal Mermer",
+                "25.116.1100": "🔲 Granit Karo (60×60)",
+            }
+            WALL_MATERIALS = {
+                "25.048/1": "🎨 Saten Boya (İç Cephe)",
+                "25.034/2": "🧱 Seramik Fayans (Duvar)",
+                "27.581/1": "🪟 Alçı Panel (Alçıpan)",
+                "26.012/1": "🏔️ Mermer Kaplama",
+            }
+            CEIL_MATERIALS = {
+                "25.048/1": "🎨 Saten Boya (Tavan)",
+                "27.535/1": "🔳 Asma Tavan (60×60 Panel)",
+                "18.461/1": "💧 Su Bazlı Boya",
+            }
+            
+            blocks = result.get("blocks", [])
+            
+            # Collect all rooms
+            all_rooms_mat = []
+            for block in blocks:
+                bn = block.get("name", "Blok")
+                for floor in block.get("floors", []):
+                    for room in floor.get("rooms", []):
+                        rn = room.get("name", "Oda")
+                        all_rooms_mat.append({"block": bn, "room": rn, "ref": room})
+            
+            if not all_rooms_mat:
+                st.info("Henüz oda verisi yok.")
+            else:
+                # Room selector
+                room_labels = [f"{r['room']} ({r['block']})" for r in all_rooms_mat]
+                selected_mat_room_idx = st.selectbox(
+                    "📍 Oda Seçin", range(len(room_labels)),
+                    format_func=lambda i: room_labels[i],
+                    key="mat_room_selector"
+                )
+                
+                sel_r = all_rooms_mat[selected_mat_room_idx]
+                room_key = f"{sel_r['block']}_{sel_r['room']}"
+                
+                # Initialize defaults
+                if "material_overrides" not in st.session_state:
+                    st.session_state["material_overrides"] = {}
+                if room_key not in st.session_state["material_overrides"]:
+                    st.session_state["material_overrides"][room_key] = {
+                        "floor": "26.006/1", "wall": "25.048/1", "ceiling": "25.048/1"
+                    }
+                
+                overrides = st.session_state["material_overrides"][room_key]
+                
+                st.markdown("---")
+                
+                # --- FLOOR ---
+                st.markdown("##### 🟫 Zemin Malzemesi")
+                floor_codes = list(FLOOR_MATERIALS.keys())
+                floor_labels = list(FLOOR_MATERIALS.values())
+                f_idx = floor_codes.index(overrides["floor"]) if overrides["floor"] in floor_codes else 0
+                new_floor_idx = st.radio(
+                    "Zemin seçin", range(len(floor_labels)),
+                    format_func=lambda i: floor_labels[i],
+                    index=f_idx, horizontal=True,
+                    key=f"matf_{room_key}", label_visibility="collapsed"
+                )
+                overrides["floor"] = floor_codes[new_floor_idx]
+                
+                # --- WALL ---
+                st.markdown("##### 🧱 Duvar Malzemesi")
+                wall_codes = list(WALL_MATERIALS.keys())
+                wall_labels = list(WALL_MATERIALS.values())
+                w_idx = wall_codes.index(overrides["wall"]) if overrides["wall"] in wall_codes else 0
+                new_wall_idx = st.radio(
+                    "Duvar seçin", range(len(wall_labels)),
+                    format_func=lambda i: wall_labels[i],
+                    index=w_idx, horizontal=True,
+                    key=f"matw_{room_key}", label_visibility="collapsed"
+                )
+                overrides["wall"] = wall_codes[new_wall_idx]
+                
+                # --- CEILING ---
+                st.markdown("##### 💡 Tavan Malzemesi")
+                ceil_codes = list(CEIL_MATERIALS.keys())
+                ceil_labels = list(CEIL_MATERIALS.values())
+                c_idx = ceil_codes.index(overrides["ceiling"]) if overrides["ceiling"] in ceil_codes else 0
+                new_ceil_idx = st.radio(
+                    "Tavan seçin", range(len(ceil_labels)),
+                    format_func=lambda i: ceil_labels[i],
+                    index=c_idx, horizontal=True,
+                    key=f"matc_{room_key}", label_visibility="collapsed"
+                )
+                overrides["ceiling"] = ceil_codes[new_ceil_idx]
+                
+                # Summary card
+                st.markdown("---")
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, rgba(102,126,234,0.15), rgba(118,75,162,0.15)); 
+                            border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.1);">
+                    <p style="margin:0 0 8px; font-weight:600; color:#ccc;">📋 Seçim Özeti — {sel_r['room']}</p>
+                    <table style="width:100%; color:#eee; font-size:14px;">
+                        <tr><td>🟫 Zemin</td><td><b>{FLOOR_MATERIALS.get(overrides['floor'], overrides['floor'])}</b></td><td style="color:#888">{overrides['floor']}</td></tr>
+                        <tr><td>🧱 Duvar</td><td><b>{WALL_MATERIALS.get(overrides['wall'], overrides['wall'])}</b></td><td style="color:#888">{overrides['wall']}</td></tr>
+                        <tr><td>💡 Tavan</td><td><b>{CEIL_MATERIALS.get(overrides['ceiling'], overrides['ceiling'])}</b></td><td style="color:#888">{overrides['ceiling']}</td></tr>
+                    </table>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("")
+                
+                col_save, col_all = st.columns(2)
+                with col_save:
+                    if st.button("💾 Bu Odayı Kaydet", use_container_width=True, key="save_mat_single"):
+                        st.success(f"✅ {sel_r['room']} malzemeleri kaydedildi!")
+                
+                with col_all:
+                    if st.button("📋 Tümüne Uygula", use_container_width=True, key="save_mat_all",
+                                 help="Bu seçimleri tüm odalara uygular"):
+                        for r in all_rooms_mat:
+                            rk = f"{r['block']}_{r['room']}"
+                            st.session_state["material_overrides"][rk] = {
+                                "floor": overrides["floor"],
+                                "wall": overrides["wall"],
+                                "ceiling": overrides["ceiling"]
+                            }
+                        st.success(f"✅ {len(all_rooms_mat)} odanın tamamına uygulandı!")
+                        st.rerun()
+        
+        # Tabs for different views
+        tab1, tab2, tab3 = st.tabs(["📋 Metraj (BOM)", "🕵️ Müfettiş", "📁 Ham JSON"])
+        
+        with tab1:
+            st.subheader("📋 Malzeme Listesi (Bill of Materials)")
+            bom_df = parse_bom_to_dataframe(result.get("bom_summary", []), floor_mult)
+            if not bom_df.empty:
+                st.dataframe(bom_df, use_container_width=True, height=400)
+                
+                # Excel Download
+                excel_data = create_excel_download(bom_df, proj_name, summary)
+                st.download_button(
+                    label="📥 Excel İndir (.xlsx)",
+                    data=excel_data,
+                    file_name=f"{proj_name}_Metraj.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        
+        with tab2:
+            st.subheader("🕵️ Müfettiş (Oda Düzenleyici)")
+            st.info("Bu bölümde odaların tipini değiştirebilir ve kapı/pencere açıklıklarını düzenleyebilirsiniz.")
+            
+            # --- Selectors ---
+            blocks = result.get("blocks", [])
+            col_sel1, col_sel2 = st.columns(2)
+            
+            with col_sel1:
+                block_names = [b["name"] for b in blocks]
+                # Default to first block if not set
+                idx = 0
+                if "insp_block_sel" in st.session_state:
+                     try:
+                         idx = block_names.index(st.session_state["insp_block_sel"])
+                     except:
+                         idx = 0
+                selected_block_name = st.selectbox("Blok Seçin", block_names, index=idx, key="insp_block_sel")
+                selected_block = next((b for b in blocks if b["name"] == selected_block_name), None)
+            
+            with col_sel2:
+                if selected_block:
+                    all_rooms = []
+                    for f in selected_block.get("floors", []):
+                        all_rooms.extend(f.get("rooms", []))
+                    room_names = [r["name"] for r in all_rooms]
+                    
+                    # Default to first room
+                    r_idx = 0
+                    if "insp_room_sel" in st.session_state:
+                        try:
+                            # Handle potential error if room detected room list changed
+                            if st.session_state["insp_room_sel"] in room_names:
+                                r_idx = room_names.index(st.session_state["insp_room_sel"])
+                        except:
+                            r_idx = 0
+                            
+                    selected_room_name = st.selectbox("Oda Seçin", room_names, index=r_idx, key="insp_room_sel")
+                    selected_room = next((r for r in all_rooms if r["name"] == selected_room_name), None)
+                else:
+                    selected_room = None
+
+            if selected_room:
+                st.divider()
+                
+                # --- Room Type Map (Turkish labels) ---
+                ROOM_TYPE_TR = {
+                    "living": "🏠 Yaşam Alanı (Salon/Yatak Odası)",
+                    "wet": "🚿 Islak Hacim (Banyo/WC)",
+                    "kitchen": "🍳 Mutfak",
+                    "hallway": "🚪 Koridor / Hol",
+                    "stairs": "🪜 Merdiven",
+                    "elevator": "🛗 Asansör / Şaft",
+                    "entrance": "🏢 Bina Girişi",
+                    "outdoor": "🌿 Balkon / Teras",
+                    "storage": "📦 Depo / Kiler",
+                    "unknown": "❓ Bilinmeyen",
+                }
+                room_types_list = list(ROOM_TYPE_TR.keys())
+                room_types_labels = list(ROOM_TYPE_TR.values())
+                
+                # --- Title + Room Type (side by side) ---
+                col_title, col_type, col_save_type = st.columns([2, 2, 1])
+                
+                with col_title:
+                    st.markdown(f"### ✏️ {selected_room['name']}")
+                
+                with col_type:
+                    current_type = selected_room.get("room_type", "living")
+                    # Normalize old values
+                    if current_type == "bedroom": current_type = "living"
+                    if current_type == "balcony": current_type = "outdoor"
+                    
+                    try:
+                        type_idx = room_types_list.index(current_type)
+                    except ValueError:
+                        type_idx = 0
+                    
+                    new_type_label = st.selectbox(
+                        "Oda Tipi",
+                        room_types_labels,
+                        index=type_idx,
+                        key=f"type_sel_{selected_room['name']}"
+                    )
+                    new_type = room_types_list[room_types_labels.index(new_type_label)]
+                
+                with col_save_type:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if new_type != current_type:
+                        if st.button("⚡ Tipi Kaydet", type="primary", use_container_width=True, key=f"quick_type_{selected_room['name']}"):
+                            try:
+                                project_id = result.get("project_id")
+                                payload = {
+                                    "block_name": selected_block_name,
+                                    "room_name": selected_room_name,
+                                    "update_data": {
+                                        "room_type": new_type,
+                                        "openings": selected_room.get("openings", [])
+                                    }
+                                }
+                                res = requests.post(f"{api_url}/projects/{project_id}/rooms/update", json=payload)
+                                if res.status_code == 200:
+                                    selected_room["room_type"] = new_type
+                                    st.success(f"✅ Tip güncellendi: {new_type_label}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Hata: {res.text}")
+                            except Exception as e:
+                                st.error(f"Hata: {e}")
+                
+                # --- Metrics Row ---
+                m1, m2, m3 = st.columns(3)
+                m1.info(f"**Alan:** {selected_room.get('area_m2')} m²")
+                m2.info(f"**Çevre:** {selected_room.get('perimeter_m')} m")
+                m3.info(f"**Duvar Alanı:** {selected_room.get('wall_area_m2', 0)} m²")
+                
+                # Openings Editor
+                st.markdown("#### Açıklıklar (Kapı/Pencere)")
+                
+                openings = selected_room.get("openings", [])
+                df_openings = pd.DataFrame(openings)
+                if df_openings.empty:
+                    df_openings = pd.DataFrame(columns=["width_m", "height_m", "type"])
+                
+                # Standardize column names for display if coming from API
+                if "opening_type" in df_openings.columns:
+                    df_openings = df_openings.rename(columns={"opening_type": "type"})
+                
+                # Default height if missing
+                if "height_m" not in df_openings.columns:
+                    df_openings["height_m"] = 2.1
+                
+                column_config = {
+                    "width_m": st.column_config.NumberColumn("Genişlik (m)", min_value=0.1, max_value=10.0, step=0.1, format="%.2f"),
+                    "height_m": st.column_config.NumberColumn("Yükseklik (m)", min_value=0.1, max_value=4.0, step=0.1, format="%.2f"),
+                    "type": st.column_config.SelectboxColumn("Tip", options=["door", "window", "opening"], required=True),
+                    "location": None 
+                }
+                
+                edited_openings = st.data_editor(
+                    df_openings,
+                    column_config=column_config,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"editor_{selected_room['name']}_{len(openings)}"
+                )
+                
+                col_btn1, col_btn2 = st.columns([1, 1])
+                with col_btn1:
+                    if st.button("💾 Güncelle ve Hesapla", type="primary", use_container_width=True, key=f"save_{selected_room['name']}"):
+                        # Save Logic
+                        new_openings_list = []
+                        for _, row in edited_openings.iterrows():
+                            if row.get("width_m", 0) > 0:
+                                new_openings_list.append({
+                                    "width_m": float(row["width_m"]),
+                                    "height_m": float(row.get("height_m", 2.1)),
+                                    "type": row["type"]
+                                })
+                        
+                        payload = {
+                            "block_name": selected_block_name,
+                            "room_name": selected_room_name,
+                            "update_data": {
+                                "room_type": new_type,
+                                "openings": new_openings_list
+                            }
+                        }
+                        
+                        try:
+                            project_id = result.get("project_id")
+                            res = requests.post(f"{api_url}/projects/{project_id}/rooms/update", json=payload)
+                            
+                            if res.status_code == 200:
+                                st.success("✅ Güncellendi! Veriler yenileniyor...")
+                                
+                                # RE-FETCH ANALYSIS to ensure sync
+                                # We can't easily re-fetch the full file analysis without the file.
+                                # BUT, for now let's update the local state manually which is faster.
+                                selected_room["room_type"] = new_type
+                                selected_room["openings"] = new_openings_list
+                                
+                                # Better: If we had a GET /projects/{id} endpoint that returned the full analysis json, we could call that.
+                                # But we only have GET /projects/{id} which returns DB model, not the full AnalysisResponse format we use here.
+                                # So patching is the best MVP approach.
+                                
+                                st.rerun()
+                            else:
+                                st.error(f"Hata: {res.text}")
+                        except Exception as e:
+                            st.error(f"Hata: {e}")
+
+                with col_btn2:
+                    if st.button("🗑️ Odayı Sil", type="secondary", use_container_width=True, key=f"del_{selected_room['name']}"):
+                        try:
+                            project_id = result.get("project_id")
+                            res = requests.delete(
+                                f"{api_url}/projects/{project_id}/rooms",
+                                params={"block_name": selected_block_name, "room_name": selected_room_name}
+                            )
+                            
+                            if res.status_code == 200:
+                                st.success("✅ Silindi!")
+                                if selected_block:
+                                    for f in selected_block.get("floors", []):
+                                        f["rooms"] = [r for r in f["rooms"] if r["name"] != selected_room_name]
+                                st.rerun()
+                            else:
+                                st.error(f"Hata: {res.text}")
+                        except Exception as e:
+                            st.error(f"Hata: {e}")
+
+                # --- v1.2: Bulk Action UI ---
+                st.divider()
+                st.markdown("#### 🚀 Toplu Pencere/Kapı Kopyala")
+                st.caption(f"'{selected_room['name']}' odasındaki açılışları seçilen diğer odalara kopyalar.")
+                
+                other_room_names = [rn for rn in room_names if rn != selected_room_name]
+                target_rooms = st.multiselect("Hedef Odaları Seçin", other_room_names, key=f"bulk_target_{selected_room['name']}")
+                
+                if st.button("📋 Seçilenlere Kopyala", use_container_width=True, key=f"bulk_btn_{selected_room['name']}"):
+                    if not target_rooms:
+                        st.warning("Lütfen en az bir hedef oda seçin.")
+                    else:
+                        payload = {
+                            "source_block": selected_block_name,
+                            "source_room": selected_room_name,
+                            "target_block": selected_block_name,
+                            "target_rooms": target_rooms
+                        }
+                        try:
+                            project_id = result.get("project_id")
+                            res = requests.post(f"{api_url}/projects/{project_id}/rooms/bulk-copy", json=payload)
+                            if res.status_code == 200:
+                                st.success(f"✅ {len(target_rooms)} odaya başarıyla kopyalandı!")
+                                # Force re-fetch of analysis would be ideal here if possible
+                                st.rerun()
+                            else:
+                                st.error(f"Toplu kopyalama hatası: {res.text}")
+                        except Exception as e:
+                            st.error(f"İletişim hatası: {e}")
+
+            # --- Restore Original Rooms Table ---
+            st.markdown("---")
+            with st.expander("📊 Tüm Odaların Listesi (Özet)", expanded=False):
+                rooms_df = parse_rooms_to_dataframe(result.get("blocks", []), floor_mult)
+                if not rooms_df.empty:
+                    st.dataframe(rooms_df, use_container_width=True, height=300)
+            
+            # --- v1.2: Multi-Block Room Comparison ---
+            if len(blocks) > 1:
+                st.divider()
+                st.subheader("🔀 Bloklar Arası Oda Karşılaştırma")
+                st.caption("Aynı isimdeki odaların bloklar arasındaki farklarını gösterir. Alan farkı >%10 olan odalar farklı tip olarak etiketlenir.")
+                
+                # Collect all rooms per block
+                room_variants = {}  # room_name -> [(block_name, area, perimeter, room_type)]
+                for block in blocks:
+                    b_name = block.get("name", "?")
+                    for floor in block.get("floors", []):
+                        for room in floor.get("rooms", []):
+                            r_name = room.get("name", "?")
+                            if r_name not in room_variants:
+                                room_variants[r_name] = []
+                            room_variants[r_name].append({
+                                "blok": b_name,
+                                "alan": room.get("area_m2", 0),
+                                "cevre": room.get("perimeter_m", 0),
+                                "tip": room.get("room_type", "unknown"),
+                            })
+                
+                # Build comparison table
+                comparison_rows = []
+                for r_name, variants in room_variants.items():
+                    if len(variants) < 2:
+                        continue
+                    
+                    # Group by area (>10% difference = different type)
+                    areas = [v["alan"] for v in variants]
+                    unique_types = []
+                    type_map = {}  # area -> type_label
+                    
+                    for area in sorted(set(areas)):
+                        matched = False
+                        for ref_area, label in unique_types:
+                            if abs(area - ref_area) / max(ref_area, 0.01) < 0.10:
+                                type_map[area] = label
+                                matched = True
+                                break
+                        if not matched:
+                            label = f"Tip {len(unique_types) + 1}"
+                            unique_types.append((area, label))
+                            type_map[area] = label
+                    
+                    for v in variants:
+                        tip_label = type_map.get(v["alan"], "?")
+                        if len(unique_types) <= 1:
+                            tip_label = "Standart"
+                        comparison_rows.append({
+                            "Oda": r_name,
+                            "Blok": v["blok"],
+                            "Alt Tip": tip_label,
+                            "Alan (m²)": round(v["alan"], 1),
+                            "Çevre (m)": round(v["cevre"], 1),
+                            "Oda Tipi": v["tip"],
+                        })
+                
+                if comparison_rows:
+                    comp_df = pd.DataFrame(comparison_rows)
+                    
+                    # Highlight different types
+                    has_variants = comp_df[comp_df["Alt Tip"] != "Standart"]
+                    if not has_variants.empty:
+                        st.warning(f"⚠️ {len(has_variants['Oda'].unique())} oda farklı bloklarda farklı boyutlara sahip")
+                    
+                    st.dataframe(comp_df, use_container_width=True, hide_index=True, height=300)
+                else:
+                    st.success("✅ Tüm odalar tüm bloklarda aynı boyutlara sahip.")
+        
+        with tab3:
+            st.subheader("📁 Ham JSON Yanıtı")
+            st.json(result)
+            json_str = json.dumps(result, indent=2, ensure_ascii=False)
+            st.download_button(
+                label="📥 JSON İndir",
+                data=json_str,
+                file_name=f"{proj_name}_raw.json",
+                mime="application/json"
+            )
 elif app_mode == "📂 Proje Geçmişi":
     # ==========================================================================
     # PROJECT HISTORY MODE (v1.1)
@@ -883,6 +1146,9 @@ elif app_mode == "📂 Proje Geçmişi":
                                         st.session_state["analysis_result"] = loaded_data
                                         st.session_state["floor_multiplier"] = 1
                                         st.session_state["project_name"] = loaded_data.get("project_name", "Yüklenen Proje")
+                                        # Persist project_id in URL for F5 survival
+                                        if loaded_data.get("project_id"):
+                                            st.query_params["pid"] = loaded_data["project_id"]
                                         st.success("✅ Proje yüklendi! Metraj Hesaplayıcı moduna geçin.")
                                         st.rerun()
                                     else:
@@ -897,6 +1163,13 @@ elif app_mode == "📂 Proje Geçmişi":
                                 )
                                 if delete_response.status_code == 200:
                                     st.success("✅ Proje silindi!")
+                                    # Clear the session state if the deleted project was the one currently loaded
+                                    if st.session_state.get("analysis_result", {}).get("project_id") == project['id']:
+                                        del st.session_state["analysis_result"]
+                                        if "project_name" in st.session_state:
+                                            del st.session_state["project_name"]
+                                        if "floor_multiplier" in st.session_state:
+                                            del st.session_state["floor_multiplier"]
                                     st.rerun()
                                 else:
                                     st.error("❌ Silme işlemi başarısız!")
@@ -1185,7 +1458,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style="text-align: center; color: #666; font-size: 0.85rem;">
-        🏗️ <strong>İnşaat Metraj Otomasyonu</strong> v1.0.0 | 
+        🏗️ <strong>İnşaat Metraj Otomasyonu</strong> v1.2.0 (Faz 3) | 
         Powered by FastAPI + Streamlit | 
         © 2026 AI Solutions
     </div>

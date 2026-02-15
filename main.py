@@ -32,14 +32,14 @@ import time
 
 from fastapi import (
     FastAPI, HTTPException, UploadFile, File, 
-    Form, Depends, BackgroundTasks, Query
+    Form, Depends, BackgroundTasks, Query, Body
 )
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, validator
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, select, delete, update
 
 from config import API, LOGGING_CONFIG, GEOMETRY, RoomType, ROOM_MATERIALS
 from database import (
@@ -51,7 +51,7 @@ from database import (
 )
 from geometry_engine import (
     CadProcessor, QuantityCalculator, ProcessingResult,
-    DetectedBlock, DetectedRoom, ProcessingWarning
+    DetectedBlock, DetectedRoom, DetectedOpening, ProcessingWarning
 )
 from visualization import generate_floor_plan_image
 
@@ -108,6 +108,20 @@ class AnalyzeRequest(BaseModel):
     meta_data: ProjectMetaData
 
 
+class BulkCopyRequest(BaseModel):
+    """Request model for bulk copying opening configurations."""
+    source_block: str
+    source_room: str
+    target_block: str
+    target_rooms: list[str]
+
+
+class UpdateRoomRequest(BaseModel):
+    """Request model for manual room updates (v1.2)."""
+    room_type: Optional[str] = None
+    openings: Optional[list[dict]] = None
+
+
 class WarningResponse(BaseModel):
     """Warning item in response."""
     type: str
@@ -133,6 +147,14 @@ class RoomQuantity(BaseModel):
     recipe_breakdown: list[MaterialBreakdown] = []
 
 
+class OpeningResponse(BaseModel):
+    """Detailed opening info (v1.2)."""
+    width_m: float
+    height_m: float
+    opening_type: str
+    location: Optional[tuple[float, float]] = None
+
+
 class RoomResponse(BaseModel):
     """Room data in response."""
     name: str
@@ -141,6 +163,7 @@ class RoomResponse(BaseModel):
     perimeter_m: float
     wall_area_m2: float
     opening_count: int
+    openings: list[OpeningResponse] = []  # v1.2
     materials: list[RoomQuantity]
 
 
@@ -428,12 +451,11 @@ async def build_analysis_response(
             for qty in room_quantities:
                 pose_code = qty["pose_code"]
                 
-                # Get pose description
                 pose_result = await db.execute(
                     text("SELECT description FROM ref_poses WHERE code = :code"),
                     {"code": pose_code}
                 )
-                pose_row = pose_result.fetchone()
+                pose_row = pose_result.first()
                 pose_desc = pose_row.description if pose_row else pose_code
                 
                 # Get recipe breakdown
@@ -496,6 +518,14 @@ async def build_analysis_response(
                 perimeter_m=room.perimeter_m,
                 wall_area_m2=round(wall_area, 4),
                 opening_count=len(room.openings),
+                openings=[
+                    OpeningResponse(
+                        width_m=o.width_m,
+                        height_m=o.height_m,
+                        opening_type=o.opening_type,
+                        location=o.location
+                    ) for o in room.openings
+                ],
                 materials=materials
             )
             floor_rooms.append(room_response)
@@ -698,7 +728,24 @@ async def analyze_cad_file(
         cleanup_expired_cache()
         
         # v1.1: Save project to database for history
+        logger.info(f"💾 STARTING DATABASE SAVE for project: {project_name}")
         try:
+            # Serializing detected geometry for Inspector (v1.2)
+            detected_geometry = {}
+            for block in result.blocks:
+                detected_geometry[block.name] = {}
+                for room in block.rooms:
+                    detected_geometry[block.name][room.name] = {
+                        "room_type": room.room_type.value,
+                        "area_m2": room.area_m2,
+                        "perimeter_m": room.perimeter_m,
+                        "wall_length_m": room.wall_length_m,
+                        "openings": [
+                            {"width_m": o.width_m, "height_m": o.height_m, "type": o.opening_type}
+                            for o in room.openings
+                        ]
+                    }
+
             # Create Project record
             project_record = Project(
                 id=uuid.UUID(analysis_id),
@@ -707,49 +754,54 @@ async def analyze_cad_file(
                 description=f"Analiz: {project_name}",
                 meta_data={
                     "project_stats": {
-                        "total_area_m2": response.summary.get("total_area_m2", 0),
-                        "block_count": response.summary.get("block_count", 0),
-                        "room_count": response.summary.get("room_count", 0),
-                        "floor_height_m": floor_height_m
-                    }
+                        "total_area_m2": float(response.summary.get("total_area_m2", 0)),
+                        "block_count": int(response.summary.get("block_count", 0)),
+                        "room_count": int(response.summary.get("room_count", 0)),
+                        "floor_height_m": float(floor_height_m)
+                    },
+                    "detected_geometry": detected_geometry,
+                    "floor_plan_image": response.floor_plan_image  # v1.2: Store image for history (via response, not local var)
                 },
                 original_filename=file.filename,
                 file_hash=result.file_hash,
                 status="completed",
-                warnings=[{"type": w.warning_type, "message": w.message, "location": list(w.location) if w.location else None} for w in result.warnings],
+                warnings=[{"type": str(w.warning_type), "message": str(w.message)} for w in result.warnings],
                 processed_at=datetime.now(timezone.utc)
             )
             db.add(project_record)
             
             # Create Quantity records for each room/material
+            calculator = QuantityCalculator(floor_height_m=floor_height_m)
             for block in result.blocks:
                 for room in block.rooms:
-                    # Get material assignments
-                    calculator = QuantityCalculator()
-                    materials = calculator.calculate_room_quantities(room, floor_height_m)
+                    materials = calculator.calculate_room_quantities(room)
                     
                     for mat in materials:
                         qty_record = Quantity(
+                            id=uuid.uuid4(),
                             project_id=uuid.UUID(analysis_id),
                             block_name=block.name,
                             floor_name="Zemin Kat",  # Default for MVP
                             room_name=room.name,
                             room_type=room.room_type.value,
-                            area_m2=room.area_m2,
-                            perimeter_m=room.perimeter_m,
-                            wall_area_m2=room.wall_length_m * floor_height_m,
+                            area_m2=Decimal(str(room.area_m2)),
+                            perimeter_m=Decimal(str(room.perimeter_m)),
+                            wall_area_m2=Decimal(str(room.wall_length_m * floor_height_m)),
                             opening_count=len(room.openings),
                             pose_code=mat["pose_code"],
                             pose_category=mat["category"],
-                            quantity=mat["quantity"],
+                            quantity=Decimal(str(mat["quantity"])),
                             unit=mat["unit"]
                         )
                         db.add(qty_record)
             
+            logger.info("📡 Committing to database...")
             await db.commit()
-            logger.info(f"Saved project {analysis_id} to database with {len(result.blocks)} blocks")
+            logger.info(f"✅ SUCCESSFULLY SAVED project {analysis_id}")
         except Exception as save_error:
-            logger.warning(f"Failed to save project to database: {save_error}")
+            logger.error(f"❌ DATABASE SAVE ERROR: {str(save_error)}")
+            import traceback
+            logger.error(traceback.format_exc())
             # Don't fail the request if save fails - analysis result is still valid
             await db.rollback()
         
@@ -769,6 +821,288 @@ async def analyze_cad_file(
             temp_file.unlink()
         except:
             pass
+
+
+@app.post("/projects/{project_id}/rooms/update")
+async def update_room_details(
+    project_id: uuid.UUID,
+    block_name: str = Body(..., embed=True),
+    room_name: str = Body(..., embed=True),
+    update_data: UpdateRoomRequest = Body(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update room details (Type, Openings) and recalculate quantities.
+    
+    Used by "The Inspector" (v1.2) for manual corrections.
+    """
+    # 1. Fetch Project
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # 2. Get Geometry from Metadata
+    meta_data = dict(project.meta_data) # Copy dict
+    detected_geometry = meta_data.get("detected_geometry", {})
+    
+    if block_name not in detected_geometry or room_name not in detected_geometry[block_name]:
+        raise HTTPException(status_code=404, detail="Room geometry not found in metadata")
+
+    room_data = detected_geometry[block_name][room_name]
+
+    # 3. Update Geometry
+    if update_data.room_type:
+        room_data["room_type"] = update_data.room_type
+    
+    if update_data.openings is not None:
+        room_data["openings"] = update_data.openings
+
+    # Recalculate wall length based on new openings
+    try:
+        openings = [
+            DetectedOpening(
+                width_m=float(o["width_m"]), 
+                height_m=float(o.get("height_m", 2.1)), 
+                location=(0,0), 
+                opening_type=o["type"]
+            )
+            for o in room_data["openings"]
+        ]
+        total_opening_width = sum(o.width_m for o in openings)
+        perimeter = float(room_data["perimeter_m"])
+        room_data["wall_length_m"] = max(0.0, perimeter - total_opening_width)
+    except Exception as e:
+        logger.error(f"Error recalculating wall length: {e}")
+        # Continue with old wall length if fails
+        openings = []
+
+    # Save updated geometry back to metadata
+    detected_geometry[block_name][room_name] = room_data
+    meta_data["detected_geometry"] = detected_geometry
+    meta_data["has_manual_overrides"] = True
+    
+    # Force update metadata
+    # SQLAlchemy requires explicit reassignment or flag modification for JSONB
+    project.meta_data = meta_data 
+    
+    # 4. Re-calculate Quantities
+    # Create Dummy DetectedRoom
+    from geometry_engine import DetectedRoom, RoomType
+    
+    try:
+        dummy_room = DetectedRoom(
+            name=room_name,
+            room_type=RoomType(room_data["room_type"]),
+            polygon=None, #/ Calculator doesn't use geometry directly
+            area_m2=float(room_data["area_m2"]),
+            perimeter_m=float(room_data["perimeter_m"]),
+            wall_length_m=float(room_data["wall_length_m"]),
+            openings=openings
+        )
+        
+        # Calculate
+        floor_height = meta_data["project_stats"].get("floor_height_m", 2.8)
+        calculator = QuantityCalculator(floor_height_m=floor_height)
+        new_quantities = calculator.calculate_room_quantities(dummy_room)
+        
+        # 5. Update Database Records
+        # Delete old quantities for this room
+        await db.execute(
+            delete(Quantity).where(
+                Quantity.project_id == project_id,
+                Quantity.block_name == block_name,
+                Quantity.room_name == room_name
+            )
+        )
+        
+        # Insert new quantities
+        for mat in new_quantities:
+            qty_record = Quantity(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                block_name=block_name,
+                floor_name="Zemin Kat",
+                room_name=room_name,
+                room_type=dummy_room.room_type.value,
+                area_m2=Decimal(str(dummy_room.area_m2)),
+                perimeter_m=Decimal(str(dummy_room.perimeter_m)),
+                wall_area_m2=Decimal(str(dummy_room.wall_length_m * floor_height)),
+                opening_count=len(dummy_room.openings),
+                pose_code=mat["pose_code"],
+                pose_category=mat["category"],
+                quantity=Decimal(str(mat["quantity"])),
+                unit=mat["unit"],
+                is_manual_override=True 
+            )
+            db.add(qty_record)
+            
+        await db.commit()
+        return {"status": "success", "message": "Room updated successfully"}
+        
+    except Exception as e:
+        logger.exception(f"Failed to update room {room_name}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
+
+@app.delete("/projects/{project_id}/rooms")
+async def delete_room(
+    project_id: uuid.UUID,
+    block_name: str = Query(..., description="Block name"),
+    room_name: str = Query(..., description="Room name"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a room and its quantities from the project.
+    """
+    try:
+        # 1. Fetch Project
+        result = await db.execute(select(Project).where(Project.id == project_id))
+        project = result.scalar_one_or_none()
+        
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # 2. Update Metadata (Remove from geometry)
+        meta_data = dict(project.meta_data)
+        detected_geometry = meta_data.get("detected_geometry", {})
+        
+        if block_name in detected_geometry and room_name in detected_geometry[block_name]:
+            del detected_geometry[block_name][room_name]
+            meta_data["detected_geometry"] = detected_geometry
+            meta_data["has_manual_overrides"] = True
+            project.meta_data = meta_data
+
+        # 3. Delete Quantities
+        await db.execute(
+            delete(Quantity).where(
+                Quantity.project_id == project_id,
+                Quantity.block_name == block_name,
+                Quantity.room_name == room_name
+            )
+        )
+        
+        await db.commit()
+        return {"status": "success", "message": "Room deleted successfully"}
+        
+    except Exception as e:
+        logger.exception(f"Failed to delete room {room_name}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+@app.post("/projects/{project_id}/rooms/bulk-copy")
+async def bulk_copy_openings(
+    project_id: uuid.UUID,
+    copy_data: BulkCopyRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Copy openings configuration from one room to multiple other rooms.
+    
+    Used for bulk distributing window/door settings in "The Inspector".
+    """
+    # 1. Fetch Project
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # 2. Get Source Openings
+    meta_data = dict(project.meta_data)
+    detected_geometry = meta_data.get("detected_geometry", {})
+    
+    source_room_data = detected_geometry.get(copy_data.source_block, {}).get(copy_data.source_room)
+    if not source_room_data:
+        raise HTTPException(status_code=404, detail="Source room data not found")
+    
+    source_openings = source_room_data.get("openings", [])
+    
+    # 3. Apply to Target Rooms
+    updated_rooms_count = 0
+    from geometry_engine import DetectedRoom, RoomType, QuantityCalculator, DetectedOpening
+    floor_height = meta_data["project_stats"].get("floor_height_m", 2.8)
+    calculator = QuantityCalculator(floor_height_m=floor_height)
+    
+    for room_name in copy_data.target_rooms:
+        if room_name not in detected_geometry.get(copy_data.target_block, {}):
+            continue
+            
+        target_room_data = detected_geometry[copy_data.target_block][room_name]
+        target_room_data["openings"] = source_openings # Clone openings
+        
+        # Recalculate wall length
+        try:
+            openings_objs = [
+                DetectedOpening(
+                    width_m=float(o["width_m"]), 
+                    height_m=float(o.get("height_m", 2.1)), 
+                    location=(0,0), 
+                    opening_type=o["type"]
+                )
+                for o in source_openings
+            ]
+            total_opening_width = sum(o.width_m for o in openings_objs)
+            perimeter = float(target_room_data["perimeter_m"])
+            target_room_data["wall_length_m"] = max(0.0, perimeter - total_opening_width)
+            
+            # Re-calculate quantities
+            dummy_room = DetectedRoom(
+                name=room_name,
+                room_type=RoomType(target_room_data["room_type"]),
+                polygon=None,
+                area_m2=float(target_room_data["area_m2"]),
+                perimeter_m=float(target_room_data["perimeter_m"]),
+                wall_length_m=float(target_room_data["wall_length_m"]),
+                openings=openings_objs
+            )
+            new_quantities = calculator.calculate_room_quantities(dummy_room)
+            
+            # Delete and Re-insert
+            await db.execute(
+                delete(Quantity).where(
+                    Quantity.project_id == project_id,
+                    Quantity.block_name == copy_data.target_block,
+                    Quantity.room_name == room_name
+                )
+            )
+            
+            for mat in new_quantities:
+                qty_record = Quantity(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    block_name=copy_data.target_block,
+                    floor_name="Zemin Kat",
+                    room_name=room_name,
+                    room_type=dummy_room.room_type.value,
+                    area_m2=Decimal(str(dummy_room.area_m2)),
+                    perimeter_m=Decimal(str(dummy_room.perimeter_m)),
+                    wall_area_m2=Decimal(str(dummy_room.wall_length_m * floor_height)),
+                    opening_count=len(dummy_room.openings),
+                    pose_code=mat["pose_code"],
+                    pose_category=mat["category"],
+                    quantity=Decimal(str(mat["quantity"])),
+                    unit=mat["unit"],
+                    is_manual_override=True 
+                )
+                db.add(qty_record)
+                
+            updated_rooms_count += 1
+        except Exception as e:
+            logger.error(f"Failed to copy openings to {room_name}: {e}")
+
+    # 4. Finalize
+    project.meta_data = meta_data
+    await db.commit()
+    
+    return {
+        "status": "success", 
+        "message": f"Copied openings to {updated_rooms_count} rooms.",
+        "updated_rooms": updated_rooms_count
+    }
 
 
 @app.get("/poses", response_model=list[PoseResponse])
@@ -1072,14 +1406,16 @@ async def list_projects(
         query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
         
         result = await db.execute(text(query), params)
-        rows = result.fetchall()
+        rows = result.all()
+        logger.info(f"🔍 Found {len(rows)} projects in list query")
         
         # Count total
         count_query = "SELECT COUNT(*) FROM projects WHERE status = 'completed'"
         if search:
             count_query += " AND name ILIKE :search"
         count_result = await db.execute(text(count_query), {"search": f"%{search}%"} if search else {})
-        total = count_result.scalar()
+        total = count_result.scalar() or 0
+        logger.info(f"🔍 Total projects count: {total}")
         
         projects = []
         for row in rows:
@@ -1122,7 +1458,7 @@ async def get_project(
             text("SELECT * FROM projects WHERE id = :id"),
             {"id": project_id}
         )
-        project = project_result.fetchone()
+        project = project_result.first()
         
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -1138,7 +1474,7 @@ async def get_project(
             """),
             {"project_id": project_id}
         )
-        quantities = qty_result.fetchall()
+        quantities = qty_result.all()
         
         # Reconstruct blocks structure
         blocks_dict = {}
@@ -1153,17 +1489,22 @@ async def get_project(
             if floor_name not in blocks_dict[block_name]["floors"]:
                 blocks_dict[block_name]["floors"][floor_name] = {"name": floor_name, "rooms": {}}
             
+            # Retrieve geometric data from meta_data if available
+            meta = project.meta_data or {}
+            geom_data = meta.get("detected_geometry", {}).get(block_name, {}).get(room_name, {})
+            
             if room_name not in blocks_dict[block_name]["floors"][floor_name]["rooms"]:
                 blocks_dict[block_name]["floors"][floor_name]["rooms"][room_name] = {
                     "name": room_name,
-                    "room_type": qty.room_type,
-                    "area_m2": float(qty.area_m2) if qty.area_m2 else 0,
-                    "perimeter_m": float(qty.perimeter_m) if qty.perimeter_m else 0,
-                    "wall_area_m2": float(qty.wall_area_m2) if qty.wall_area_m2 else 0,
-                    "opening_count": qty.opening_count or 0,
+                    "room_type": geom_data.get("room_type") or qty.room_type or "unknown",
+                    "area_m2": float(qty.area_m2) if qty.area_m2 else geom_data.get("area_m2", 0),
+                    "perimeter_m": float(qty.perimeter_m) if qty.perimeter_m else geom_data.get("perimeter_m", 0),
+                    "wall_area_m2": float(qty.wall_area_m2) if qty.wall_area_m2 else geom_data.get("wall_area_m2", 0),
+                    "opening_count": qty.opening_count or len(geom_data.get("openings", [])),
+                    "openings": geom_data.get("openings", []), # v1.2: Restore openings for Inspector
                     "materials": []
                 }
-                blocks_dict[block_name]["total_area_m2"] += float(qty.area_m2) if qty.area_m2 else 0
+                blocks_dict[block_name]["total_area_m2"] += float(qty.area_m2) if qty.area_m2 else geom_data.get("area_m2", 0)
             
             # Add material to room
             blocks_dict[block_name]["floors"][floor_name]["rooms"][room_name]["materials"].append({
@@ -1213,21 +1554,19 @@ async def get_project(
         stats = meta.get("project_stats", {})
         
         return {
+            "status": "success",
             "project_id": str(project.id),
             "project_name": project.name,
-            "calculated_at": project.processed_at.isoformat() if project.processed_at else project.created_at.isoformat(),
-            "file_hash": project.file_hash,
             "summary": {
-                "total_area_m2": stats.get("total_area_m2", 0),
-                "block_count": stats.get("block_count", 0),
-                "room_count": stats.get("room_count", 0),
-                "floor_height_m": stats.get("floor_height_m", 2.8)
+                "total_area_m2": meta.get("project_stats", {}).get("total_area_m2", 0),
+                "block_count": meta.get("project_stats", {}).get("block_count", 0),
+                "room_count": meta.get("project_stats", {}).get("room_count", 0),
+                "floor_height_m": meta.get("project_stats", {}).get("floor_height_m", 2.8)
             },
             "blocks": blocks_response,
             "bom_summary": bom_summary,
-            "floor_plan_image": None,  # Will be regenerated on demand
-            "warnings": project.warnings or [],
-            "stats": stats
+            "floor_plan_image": meta.get("floor_plan_image"),  # v1.2: Retrieve stored image
+            "warnings": project.warnings or []
         }
     except HTTPException:
         raise
@@ -1302,7 +1641,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8088,
         reload=True,
         log_level="info"
     )
